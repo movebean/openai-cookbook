@@ -14,6 +14,7 @@ import pandas as pd
 import tiktoken
 import openai
 import numpy as np
+import threading
 from openai.embeddings_utils import distances_from_embeddings, cosine_similarity
 
 # Regex pattern to match a URL
@@ -22,6 +23,8 @@ HTTP_URL_PATTERN = r'^http[s]*://.+'
 # Define root domain to crawl
 domain = "openai.com"
 full_url = "https://openai.com/"
+
+PROCESSED = True
 
 # Create a class to parse the HTML and get the hyperlinks
 class HyperlinkParser(HTMLParser):
@@ -104,6 +107,43 @@ def get_domain_hyperlinks(local_domain, url):
 ### Step 4
 ################################################################################
 
+def _crawl(local_domain, queue, lock, seen):
+    lock.acquire()
+    while queue:
+        url = queue.pop()
+        lock.release()
+        print(url)
+
+        # Save text from the url to a <url>.txt file
+        with open('text/'+local_domain+'/'+url[8:].replace("/", "_") + ".txt", "w", encoding="UTF-8") as f:
+
+            try:
+                # Get the text from the URL using BeautifulSoup
+                soup = BeautifulSoup(requests.get(url).text, "html.parser")
+
+                # Get the text but remove the tags
+                text = soup.get_text()
+
+                # If the crawler gets to a page that requires JavaScript, it will stop the crawl
+                if ("You need to enable JavaScript to run this app." in text):
+                    print("Unable to parse page " + url + " due to JavaScript being required")
+                
+                # Otherwise, write the text to the file in the text directory
+                f.write(text)
+            except Exception as e:
+                print("Exception")
+
+        # Get the hyperlinks from the URL and add them to the queue
+        for link in get_domain_hyperlinks(local_domain, url):
+            lock.acquire()
+            if link not in seen:
+                queue.append(link)
+                seen.add(link)
+            lock.release()
+        lock.acquire()
+
+    lock.release()
+
 def crawl(url):
     # Parse the URL and get the domain
     local_domain = urlparse(url).netloc
@@ -125,17 +165,11 @@ def crawl(url):
     if not os.path.exists("processed"):
             os.mkdir("processed")
 
-    # While the queue is not empty, continue crawling
-    while queue:
+    # Save text from the url to a <url>.txt file
+    with open('text/'+local_domain+'/'+url[8:].replace("/", "_") + ".txt", "w", encoding="UTF-8") as f:
 
-        # Get the next URL from the queue
-        url = queue.pop()
-        print(url) # for debugging and to see the progress
-
-        # Save text from the url to a <url>.txt file
-        with open('text/'+local_domain+'/'+url[8:].replace("/", "_") + ".txt", "w", encoding="UTF-8") as f:
-
-            # Get the text from the URL using BeautifulSoup
+        # Get the text from the URL using BeautifulSoup
+        try:
             soup = BeautifulSoup(requests.get(url).text, "html.parser")
 
             # Get the text but remove the tags
@@ -144,17 +178,31 @@ def crawl(url):
             # If the crawler gets to a page that requires JavaScript, it will stop the crawl
             if ("You need to enable JavaScript to run this app." in text):
                 print("Unable to parse page " + url + " due to JavaScript being required")
-            
+
             # Otherwise, write the text to the file in the text directory
             f.write(text)
+        except Exception as e:
+            print("Exception")
 
-        # Get the hyperlinks from the URL and add them to the queue
-        for link in get_domain_hyperlinks(local_domain, url):
-            if link not in seen:
-                queue.append(link)
-                seen.add(link)
+    # Get the hyperlinks from the URL and add them to the queue
+    for link in get_domain_hyperlinks(local_domain, url):
+        if link not in seen:
+            queue.append(link)
+            seen.add(link)
 
-crawl(full_url)
+    lock = threading.Lock()
+    threads = []
+    for i in range(20):
+        t = threading.Thread(target=_crawl, args=(local_domain, queue, lock, seen))
+        threads.append(t)
+        t.start()
+
+    for x in threads:
+        x.join()
+
+
+if PROCESSED is False:
+    crawl(full_url)
 
 ################################################################################
 ### Step 5
@@ -172,42 +220,43 @@ def remove_newlines(serie):
 ### Step 6
 ################################################################################
 
-# Create a list to store the text files
-texts=[]
+if PROCESSED is False:
+    # Create a list to store the text files
+    texts=[]
 
-# Get all the text files in the text directory
-for file in os.listdir("text/" + domain + "/"):
+    # Get all the text files in the text directory
+    for file in os.listdir("text/" + domain + "/"):
 
-    # Open the file and read the text
-    with open("text/" + domain + "/" + file, "r", encoding="UTF-8") as f:
-        text = f.read()
+        # Open the file and read the text
+        with open("text/" + domain + "/" + file, "r", encoding="UTF-8") as f:
+            text = f.read()
 
-        # Omit the first 11 lines and the last 4 lines, then replace -, _, and #update with spaces.
-        texts.append((file[11:-4].replace('-',' ').replace('_', ' ').replace('#update',''), text))
+            # Omit the first 11 lines and the last 4 lines, then replace -, _, and #update with spaces.
+            texts.append((file[11:-4].replace('-',' ').replace('_', ' ').replace('#update',''), text))
 
-# Create a dataframe from the list of texts
-df = pd.DataFrame(texts, columns = ['fname', 'text'])
+    # Create a dataframe from the list of texts
+    df = pd.DataFrame(texts, columns = ['fname', 'text'])
 
-# Set the text column to be the raw text with the newlines removed
-df['text'] = df.fname + ". " + remove_newlines(df.text)
-df.to_csv('processed/scraped.csv')
-df.head()
+    # Set the text column to be the raw text with the newlines removed
+    df['text'] = df.fname + ". " + remove_newlines(df.text)
+    df.to_csv('processed/scraped.csv')
+    df.head()
 
-################################################################################
-### Step 7
-################################################################################
+    ################################################################################
+    ### Step 7
+    ################################################################################
 
-# Load the cl100k_base tokenizer which is designed to work with the ada-002 model
-tokenizer = tiktoken.get_encoding("cl100k_base")
+    # Load the cl100k_base tokenizer which is designed to work with the ada-002 model
+    tokenizer = tiktoken.get_encoding("cl100k_base")
 
-df = pd.read_csv('processed/scraped.csv', index_col=0)
-df.columns = ['title', 'text']
+    df = pd.read_csv('processed/scraped.csv', index_col=0)
+    df.columns = ['title', 'text']
 
-# Tokenize the text and save the number of tokens to a new column
-df['n_tokens'] = df.text.apply(lambda x: len(tokenizer.encode(x)))
+    # Tokenize the text and save the number of tokens to a new column
+    df['n_tokens'] = df.text.apply(lambda x: len(tokenizer.encode(x)))
 
-# Visualize the distribution of the number of tokens per row using a histogram
-df.n_tokens.hist()
+    # Visualize the distribution of the number of tokens per row using a histogram
+    df.n_tokens.hist()
 
 ################################################################################
 ### Step 8
@@ -255,41 +304,42 @@ def split_into_many(text, max_tokens = max_tokens):
     return chunks
     
 
-shortened = []
-
-# Loop through the dataframe
-for row in df.iterrows():
-
-    # If the text is None, go to the next row
-    if row[1]['text'] is None:
-        continue
-
-    # If the number of tokens is greater than the max number of tokens, split the text into chunks
-    if row[1]['n_tokens'] > max_tokens:
-        shortened += split_into_many(row[1]['text'])
+if PROCESSED is False:
+    shortened = []
     
-    # Otherwise, add the text to the list of shortened texts
-    else:
-        shortened.append( row[1]['text'] )
+    # Loop through the dataframe
+    for row in df.iterrows():
+    
+        # If the text is None, go to the next row
+        if row[1]['text'] is None:
+            continue
+    
+        # If the number of tokens is greater than the max number of tokens, split the text into chunks
+        if row[1]['n_tokens'] > max_tokens:
+            shortened += split_into_many(row[1]['text'])
+        
+        # Otherwise, add the text to the list of shortened texts
+        else:
+            shortened.append( row[1]['text'] )
 
-################################################################################
-### Step 9
-################################################################################
+    ################################################################################
+    ### Step 9
+    ################################################################################
 
-df = pd.DataFrame(shortened, columns = ['text'])
-df['n_tokens'] = df.text.apply(lambda x: len(tokenizer.encode(x)))
-df.n_tokens.hist()
+    df = pd.DataFrame(shortened, columns = ['text'])
+    df['n_tokens'] = df.text.apply(lambda x: len(tokenizer.encode(x)))
+    df.n_tokens.hist()
 
-################################################################################
-### Step 10
-################################################################################
+    ################################################################################
+    ### Step 10
+    ################################################################################
 
-# Note that you may run into rate limit issues depending on how many files you try to embed
-# Please check out our rate limit guide to learn more on how to handle this: https://platform.openai.com/docs/guides/rate-limits
+    # Note that you may run into rate limit issues depending on how many files you try to embed
+    # Please check out our rate limit guide to learn more on how to handle this: https://platform.openai.com/docs/guides/rate-limits
 
-df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
-df.to_csv('processed/embeddings.csv')
-df.head()
+    df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
+    df.to_csv('processed/embeddings.csv')
+    df.head()
 
 ################################################################################
 ### Step 11
@@ -339,7 +389,7 @@ def create_context(
 
 def answer_question(
     df,
-    model="text-davinci-003",
+    model="gpt-3.5-turbo",
     question="Am I allowed to publish model outputs to Twitter, without a human review?",
     max_len=1800,
     size="ada",
@@ -363,8 +413,7 @@ def answer_question(
 
     try:
         # Create a completions using the questin and context
-        response = openai.Completion.create(
-            prompt=f"Answer the question based on the context below, and if the question can't be answered based on the context, say \"I don't know\"\n\nContext: {context}\n\n---\n\nQuestion: {question}\nAnswer:",
+        response = openai.ChatCompletion.create(
             temperature=0,
             max_tokens=max_tokens,
             top_p=1,
@@ -372,8 +421,15 @@ def answer_question(
             presence_penalty=0,
             stop=stop_sequence,
             model=model,
+            messages=[
+                {"role": "system", "content": "You are my robot AI assistant"},
+                {"role": "user", "content": f"Answer the question based on the context below, and if the question can't be answered based on the context, say \"I don't know\"\n\nContext: {context}\n\n---\n\nQuestion: {question}\nAnswer:"},
+                ],
         )
-        return response["choices"][0]["text"].strip()
+        result = ''
+        for choice in response.choices:
+            result += choice.message.content
+        return result
     except Exception as e:
         print(e)
         return ""
@@ -384,4 +440,6 @@ def answer_question(
 
 print(answer_question(df, question="What day is it?", debug=False))
 
-print(answer_question(df, question="What is our newest embeddings model?"))
+print(answer_question(df, question="What is our newest embeddings model?", debug=False))
+
+print(answer_question(df, question="what is our newest chat model? And what can this model do?"))
