@@ -1,0 +1,534 @@
+## Serverless
+
+[TOC]
+
+***
+
+### Ref
+
+[云原生体系下 Serverless 弹性探索与实践](https://baijiahao.baidu.com/s?id=1707928243740357703&wfr=spider&for=pc)
+[Serverless 崛起背后的五大挑战](https://mp.weixin.qq.com/s/wDaHmQGPzUp3hd1kwOXjBQ)
+[Serverless 工程实践 | 细数 Serverless 的配套服务](https://mp.weixin.qq.com/s/CaiZGnCCpRCPo2Ed2BSLeg)
+- 前两节对 serverless 概念的讲解不错
+[Serverless 场景下 Pod 创建效率优化 | 4star](https://mp.weixin.qq.com/s?__biz=MzUzNzYxNjAzMg==&mid=2247500702&idx=1&sn=7cf1e02827cc45bbe7ccb70538d944f3&chksm=fae6c851cd9141470180730ad451b3369ac52967d46625d6ae7cd2ee5d3144e8629b04b8c9ec&mpshare=1&scene=1&srcid=0206YJcHBskDQJ5DyPFYy5eG&sharer_sharetime=1631094528610&sharer_shareid=b254b1694f3845af3122c2068a4729ae&version=3.1.15.90292&platform=mac#rd)
+[【了不起的开源开发者】线上专场：深入解读OpenFunction云原生FaaS平台 | 5star](http://mp.weixin.qq.com/s?__biz=MzI1OTY2MzMxOQ==&mid=2247496345&idx=1&sn=22815aeadccc1c4a3f48a89e5426b3f3&chksm=ea77c621dd004f37ff3a9e93a64e145f55e621c02a917ba0901e8688757cc8030b4afce2ef63&mpshare=1&scene=24&srcid=0907XWFqf7fCVU2mTjBTvzQA&sharer_sharetime=1630980165022&sharer_shareid=a60157146c6adf6ffcc97f15fd4997ca#rd)
+[先行一步，7 大技术创新和突破，阿里云把 Serverless 领域的这些难题都给解了 | 4star](https://mp.weixin.qq.com/s/rnoBYbZeem-PiRaFhH5U7w)
+- 有一些 pr 的成分，重点关注里面提到的几个技术
+> - Serverless 将异构基础资源高度抽象，因此“黑盒问题”是 Serverless 大规模普及的核心落地之痛。业内同类产品均没有透出“实例”概念，也从未在可观测功能中将 CPU、内存等指标透出，但可观测就是开发者的眼睛，没有可观测，何谈高可用呢？
+> - FC 业内率先推出 GPU 实例
+> - 函数计算通过将 VPC 网关服务化，实现计算和网络解耦，计算节点的伸缩不再受限于 ENI 挂载的能力。该方案由网关服务负责 ENI 的挂载、网关节点的高可用和自动伸缩，而函数计算专注于计算节点的调度，最终实现 VPC 网络建连时，函数冷启动时间降至 200 ms。
+> - 不同于 FaaS 形态的 Serverless，SAE 以“应用为中心”，提供了面向应用的 UI 和 API，保持了服务器和经典  PaaS 形态下的使用体验，即应用看得见、也摸得着，避免了 FaaS 对应用的改造和可观测、可调式相对较弱的体验，可以做到在线应用的零代码改造和平滑迁移。
+[ServerLive 系列](https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzI4NzI5MDM1MQ==&action=getalbum&album_id=2090641052918448128&scene=173&from_msgid=2247497262&from_itemidx=1&count=3&nolastread=1#wechat_redirect)
+[小心 Serverless 陷阱 | 5star](https://mp.weixin.qq.com/s/5OOhnVEql6CKV5IwhGgQ6w)
+> 技术具有商品属性，这是常常被我们忽略的一个事实。且不谈垄断之后带来的商业利益，一方面技术依赖市场的认可来彰显它的价值，另一方面技术还需要依靠大众的反馈才得以完善自己，所以庞大的用户群体是它繁荣的基石，它需要尽可能的为人所知。无论你是想吸引更多的项目和开发者加入某个社区中，还是想让某个框架摆脱默默无闻乃至脱颖而出，过程都务必依赖于大量的运营活动，其中不少也要倚靠背后大厂的资源投入。从近乎寿终正寝的 Silverlight 到近些年大火的 Flutter，无不遵循着类似的模式。
+> Serverless 与传统服务相比的优势之一可能是前人的宝贵经验被固化到了平台和产品形态之中，用以确保你不必再走弯路。
+> `在概念先行的前提下不同的供应商根据自己现存基础设施优先推出自己的解决方案`
+> 厂商绑定：
+> - 1. 不同服务提供的 API 和模型不尽相同，同时代码与服务集成的方式也是量身定做的，这是第一层锁；
+> - 2. 事实上从接收到请求的那一刻起，代码差异就已经注定了，虽然 Azure 和 AWS 都同意以 event handler 函数的形式来响应 trigger 的请求，但两者的函数签名差异明显，你能取得的函数所在的上下文也各有千秋。这是第二层锁。
+> - 3. 这层锁的危害在于你必须从一开始就在供应商的框架内来设计自己的解决方案。
+> 
+> 如果你对这些手段的改进仅仅理解为免去了繁琐的步骤便于我们可以更快速的将代码部署到生产环境的话，那么我建议你还是不要使用这些手段为妙。因为在软件交付的过程中纯手工的部署行为是一类反模式行为：这种一步到位的手工部署意味着你必须用手工测试的方式验证功能是否正常，同时未经试运行环境的检测而直接部署到生产环境的话，会导致我们无法验证在开发环境中产生的假设在生产环境中是依然成立的，甚至在发生问题之后没有配套机制保证我们的代码回滚到上一个稳定版本。我们可以引用《持续交付》一书中的话对理想中的持续交付进行归纳：软件发布能够（也应该）成为一个低风险、频繁、廉价、迅速且可预见的过程。
+[阿里云 FaaS 架构设计 | 5star](https://mp.weixin.qq.com/s/sWqW2wIH-lg-8kc33iQsQw)
+- 介绍了阿里云FC是怎么做性能优化的
+> 弹性伸缩
+> - 定制一些特别语言的 Runtime
+> - 准备好机器池
+> - 机器池中搭建容器池
+> - P2P 镜像分发、按需加载
+> 
+> 提升资源使用率
+> - 调度均匀
+> - 降低冷启动延迟
+> - 高密部署
+>     - 延迟挂载用户代码目录（virtiofs）
+>     - 安全容器
+>     - 代码按需加载（FUSE/NAS、OSS）
+> - VPC网络优化（网关集群）
+> - 多租户混部（提高资源利用率）
+
+[从 0 到 1，打造新一代开源函数计算平台 | 5star](https://mp.weixin.qq.com/s/UbmycwzlIcd2sQNfDXZCZg)
+> KubeSphere 社区从 2020 年下半年开始对 Serverless 领域进行深度调研。经过一段时间的调研后，我们发现：
+> - 现有开源 FaaS 项目绝大多数启动较早，大部分都在 Knative 出现前就已经存在了；
+> - Knative 是一个非常杰出的 Serverless 平台，但是 Knative Serving 仅仅能运行应用，不能运行函数，还不能称之为 FaaS 平台；
+> - Knative Eventing 也是非常优秀的事件管理框架，但是设计有些过于复杂，用户用起来有一定门槛；
+> - OpenFaaS 是比较流行的 FaaS 项目，但是技术栈有点老旧，依赖于 Prometheus 和 Alertmanager 进行 Autoscaling，在云原生领域并非最专业和敏捷的做法；
+> - 近年来云原生 Serverless 相关领域陆续涌现出了很多优秀的开源项目如 KEDA[2]、 Dapr[3]、 Cloud Native Buildpacks（CNB）[4]、 Tekton[5]、 Shipwright[6] 等，为创建新一代开源 FaaS 平台打下了基础。
+> 
+> 综上所述，我们调研的结论就是：现有开源 Serverless 或 FaaS 平台并不能满足构建现代云原生 FaaS 平台的要求，而云原生 Serverless 领域的最新进展却为构建新一代 FaaS 平台提供了可能。
+> 
+> 理想中的 FaaS 框架应该按照函数生命周期分成几个重要的部分：函数框架 (Functions framework)、函数构建 (Build)、函数服务 (Serving) 和事件驱动框架 (Events Framework)。
+> ![7db371cceb46f93f7596520262677a0e.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3987)
+> 结合上面讨论的所有技术，就诞生了OpenFunction这样一个开源项目，它的架构如图所示。
+> ![b2c8c91bcd8fb3480ecd224d66245c95.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4343)
+[从运维域看 Serverless 真的就是万能银弹吗？| 4star](https://mp.weixin.qq.com/s/rSYxtF7tQpkgsAqEH7mGaQ)
+> 第一个共识，软件工程没有银弹， Serverless 也不是银弹，它并不是解决所有问题的万能公式。
+> 第二个共识，Serverless 能够解决的是运维域的问题，它是解决特定领域问题的一个技术，并不是无限延伸的，与低代码没有关系。
+> 第三个共识是复杂度守恒定律-泰斯勒定律（Tesler’s law）。本质上它整体复杂度是守恒的，它其实是把复杂的事情留给了系统开发工程师和软件开发的工程师，让用户可以顺滑体验。同理 Serverless 也是如此，把部署 or 运维应用、网站的复杂转交给了云服务商，但整体的复杂度是不变的。
+> 第四个共识是邓宁-克鲁格效应（The Dunning-Kruger Effect），大家在认知学习过程中，都会出现这样的发展曲线：从刚开始一无所知，到对新知识的幻想，再到失望的低谷，缓慢爬坡。我们学习任何一个新事物都会经历这样一个曲线过程。Gartner 采用邓宁-克鲁格曲线，来解释新技术的发展周期。
+- 狭义与广义的 serverless，很符合 TEM 的定位
+![9451cbdeebd4707c25af5ea18802d724.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4441)
+[OpenFunction 成为 CNCF 沙箱项目，使 Serverless 函数与应用运行更简单](https://mp.weixin.qq.com/s/b4jh64IcZwvcNDQ0WrP5Kw)
+
+[阿里云张建锋：核心云产品全面 Serverless 化](https://mp.weixin.qq.com/s/01AA0ZaMoS1BEJ_w_IYZag)
+- “我们希望让用户做得更少而收获更多，通过 Serverless 化，用云就像用电一样简单。”张建锋表示，Serverless 让云计算从一种资源真正变成一种能力，未来云将全面 Serverless 化，更加接近“电网”模式，按计算的调用次数付费。
+- Serverless 并不是不用服务器，它是将服务器全权托管给了云厂商，根据业务流量大小自动弹性伸缩，开箱即用免去维护成本，按使用量计费。用户无需关心和管理底层 IT 资源，只要聚焦业务代码，根据实际请求处理业务。
+- 依托于 Serverless 架构，云上研发方式正在发生根本性的改变。从过去的集中式研发、分布式研发，到云上的组装式研发，实现了软件研发的服务化、模块化、可编排、可组装。无论是2万用户还是2000万用户体量，基于 Serverless 构建的 IT 架构都可以自适应伸缩，峰值秒级自动扩容、峰谷自动缩容。
+- 基于 Serverless 产品，云产品都变成模块化、API 化、服务化，它可以进行组装，通过拖拉拽的方式就能够构建应用，并通过流程驱动和事件驱动，让应用构建可视化，从而获得更强大的应用能力。 
+
+[未来已来：从技术升级到降本提效](https://mp.weixin.qq.com/s/q6HC6ucSk_8H5n9w7QEk4w)
+- 讲了 serverless 的一些好处，以及在阿里云 serverless 产品矩阵
+
+[从公有云方案转向谷歌开源Knative，网易云音乐的Severless演进实践 | 4star](https://mp.weixin.qq.com/s/mupPWCrPc8MEfszSsrIg2Q)
+- 传统资源交付方式的问题
+    - 弹性效率低下：大型活动业务扩容时，各个角色如应用运维、机房等深度耦合，进行一次大型活动需要非常长的准备时间
+    - 计算焦虑：由于规模问题，机房计算资源没办法实现在活动期间的快速资源弹性需求，因此常常需要准备很多闲置资源
+    - 运维繁琐：扩容变更时，很多是以工单、人工化为主的低效过程，无论效率还是质量都不尽如人意；再有“宠物”式的机器运维
+    - 成本问题：总体 CPU 等资源利用率不高，小于 20%，缺乏自动化的管理和调度能力，资源无法得到充分利用
+    - 稳定性：应用发生故障后，无法自动重新拉起或重新调度，核心业务的服务质量很难得到保障
+- 形态
+    - Serverless 应用托管：Serverless 应用托管则会包含应用生命周期的管理、CI/CD、发布策略，蓝绿或者灰度发布功能等，用户只需将服务部署后就能坐享应用托管所提供的基础能力
+    - Serverless 容器服务：使用 Serverless 容器服务的用户不需要维护 Kubernetes 集群的计算节点，系统根据服务使用的 pod 数量进行计费，但 Serverless 容器服务并不能提供完备的周边配套设施
+    - 函数计算：FaaS
+- 冷启动：
+    - 容器镜像大小
+    - 资源池
+    - P2P 镜像加速、预热
+- 一个相对完善的 Serverless 平台（PaaS Serverless）：
+    - 多语言的构建方式：包括 Dockerfile 、JAVA、Golang、Node、Python 等
+    - 多场景：支持弹性在线应用和弹性数据处理，支持同步调用模式和异步调用模式
+    - 丰富的发布策略：支持蓝绿发布和基于流量的灰度发布，确保业务的无损发布
+    - 自动扩缩容：根据业务并发以及 QPS、任务量等实现秒级自动扩缩容
+    - 全链路监控：全链路的采集指标、采集日志，自动将数据整合到应用监控
+    - 丰富的触发器：除了支持 HTTP、还支持网易内部的 Kafka、Nydus 队列作为 Serverless 触发器进行数据处理
+    - 无限容量：通过混合云、混合部署等方式，快速、自动地通过 ECI 等方式弹到阿里云、AWS 等公有云厂商
+- Serverless 劣势
+    - 冷启动
+    - 缩容会影响业务
+    - 不能固定 IP 等
+    - 扩容时对底座的冲击
+    - 预热
+    - 没有标准、厂商锁定、难迁移
+    
+***
+
+### Base
+
+**Serverless 的核心在于解耦应用和资源，即不需要提前评估和预留容量，在运行时按照实际需求自动伸缩。**
+
+#### 定义
+
+Serverless = FaaS + BaaS
+
+后端设施：是指数据库、消息队列、日志、存储等这类用于支撑业务逻辑运行，但本身无也无业务含义的技术组件，这些后端设施都运行在云中，在无服务中将它们成为“后端即服务”。
+函数：是指业务逻辑代码，这里函数的概念与粒度都已经很接近于程序编码角度的函数了，其区别是无服务中的函数运行在云端，不必考虑算力问题，也不必考虑容量规划，在无服务中将其称为“函数即服务”。
+
+##### FaaS 与 Serverless
+
+[为什么 Serverless 不成功](https://mp.weixin.qq.com/s/dIWV9qzFuByaUxvi6p1q2w)
+
+FaaS 不等于 Serverless，Serverless 是一种理念，FaaS 是实现这个理念的一种落地实践，从实践效果看，并不成功
+
+从单体到分布式，从分布式到 Serverless，都是质变，为什么说 Serverless 是这个演进路上的另外一次质变？因为开发者需要关心的问题又变了。在 Serverless 的架构下面，开发者再也不需要关心“部署模式，可扩展性，容错性”等架构问题。也就是说理想状况下，我们以单体应用的心智负担获得了分布式应用的好处。那么问题来了，为什么单体到分布式的架构演进是成功的，而分布式到 Serverless 的演进却不成功
+
+Function as a Service。打一开始人家就说清楚了，这只是解决 Function（函数/功能） 的问题，不是 Application（应用）。应用和功能之间隔着一个太平洋，功能以及数据在适当的环境中有机组合才是应用
+
+开发者的期待可能是通过 FaaS 解决应用的所有问题，而不是一些边角料问题，于是 FaaS 给人造成了一种不太有用的印象。很多人觉得 FaaS 不流行是迁移成本问题，其实不然。虽然迁移成本确实很高，但总有新的应用产生。如果新的应用也不用新的架构，那就说明新的架构本身不够好
+
+FaaS 为了保持它带来的“部署模式，可扩展性，容错性”方面的优势，使得功能之间的相互依赖变得极其复杂
+
+总结：FaaS 只是降低了运维复杂度，但是却极大地提高了开发复杂度，比如功能之间的依赖，轻则是 RPC，重则可能是 MQ、对象存储、mysql 等
+
+#### 优势
+
+##### 传统资源交付方式的问题
+
+- 弹性效率低下：大型活动业务扩容时，各个角色如应用运维、机房等深度耦合，进行一次大型活动需要非常长的准备时间
+- 计算焦虑：由于规模问题，机房计算资源没办法实现在活动期间的快速资源弹性需求，因此常常需要准备很多闲置资源
+- 运维繁琐：扩容变更时，很多是以工单、人工化为主的低效过程，无论效率还是质量都不尽如人意；再有“宠物”式的机器运维
+- 成本问题：总体 CPU 等资源利用率不高，小于 20%，缺乏自动化的管理和调度能力，资源无法得到充分利用
+- 稳定性：应用发生故障后，无法自动重新拉起或重新调度，核心业务的服务质量很难得到保障
+
+##### Serverless 的优势
+
+- 高弹性能力
+    - Iaas 弹性：稳定、功能强大丰富
+    - k8s HPA 弹性：高度抽象，自定义能力比较弱
+    - 应用画像弹性：自定义能力比较强，但不够通用
+- 按需使用
+- 按量付费
+- 极低运维复杂度
+    - “无服务器”架构因为屏蔽了服务器的各种运维复杂度，让开发人员可以将更多精力用于业务逻辑设计与实现
+    - 开发者再也不用过多考虑服务器的问题，可以更专注在产品代码上，同时`计算资源也开始作为服务出现`
+
+#### 形态
+
+- 面向应用
+类似 tem、sae、AWS appservice 对应用改造较小，屏蔽底层资源，弹性能力适中；Serverless 应用托管则会包含应用生命周期的管理、CI/CD、发布策略，蓝绿或者灰度发布功能等，用户只需将服务部署后就能坐享应用托管所提供的基础能力
+
+- 函数式
+比如：FC、SCF、CFC、EasyFaas，应用形态改变较大，弹性能力强
+
+- Serverless 容器服务
+使用 Serverless 容器服务的用户不需要维护 Kubernetes 集群的计算节点，系统根据服务使用的 pod 数量进行计费，但 Serverless 容器服务并不能提供完备的周边配套设施
+
+- installable software
+Of organizations using serverless via installable software, 29% use Knative, up from 22% in the last survey. `Knative` surpassed `Kubeless`, which dropped to 11% from 29%. Sandbox project, `Virtual Kubelet` came third at 9%.
+
+#### Serverless 劣势
+
+- 冷启动
+- 缩容会影响业务
+- 不能固定 IP 等
+- 扩容时对底座的冲击
+- 预热
+- 没有标准、厂商锁定、难迁移
+
+***
+
+### virtual kubelet
+
+- 一种虚拟的 kubelet 用来连接 Kubernetes 集群和其他平台的 API
+- 它允许使用任意计算资源支持 Kubernetes 工作节点
+- Virtual Kubelet 的主要场景是将 Kubernetes API 扩展到无服务器的容器平台
+
+[github](https://github.com/virtual-kubelet/virtual-kubelet)
+[后Kubernetes时代的虚拟机管理技术之Virtual-Kubelet篇](https://mp.weixin.qq.com/s/XSWWsw-MTCfh-oQTubcRZQ)
+> Virtual-Kubelet 是基于 Kubelet 的典型特性实现，向上伪装成 Kubelet，从而模拟出 Node 对象，对接 Kubernetes 的原生资源对象；向下提供 API，可对接其他资源管理平台提供的 Provider。
+
+[UCloud UK8S虚拟节点 让用户不再担心集群没有资源](https://mp.weixin.qq.com/s/op0RaC7szYD8Fcz6Y79cWw)
+![17bc0782c48914619f779089da12bf06.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3730)
+[official website](https://virtual-kubelet.io/)
+![a46e489d4fc24643c989f23ce6fc5cc3.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3731)
+[Deep Dive: Virtual Kubelet - Jeremy Rickard, Microsoft & Lei Zhang, Alibaba Cloud](https://www.youtube.com/watch?v=v9cwYvuzROs&ab_channel=CNCF%5BCloudNativeComputingFoundation%5D)
+![874fc816589b4da789ae6d5767debb53.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3732)
+> virtual node is actually an `API Object` borrow resource from other cloud vendors use for multi-tenancy
+[Serverless 与容器决战在即？有了弹性伸缩就不一样了](https://www.e-learn.cn/topic/3455868)
+[作业帮 K8s Serverless 虚拟节点大规模应用实践](https://mp.weixin.qq.com/s/ucKrb0kOYRFMkb_sCFm_RA)
+
+#### VK 和 multi-cluster 技术的微妙不同
+
+- VK 可以基于已有的 k8s 集群做 provider
+- VK 专注于 bridge different resource
+- multi-cluster 技术重心更像是在应用这个维度上、服务治理
+- VK 不支持 daemonSet 
+
+provider 需要自己实现
+```golang
+type PodLifecycleHandler interface {
+    // CreatePod takes a Kubernetes Pod and deploys it within the provider.
+    CreatePod(ctx context.Context, pod *corev1.Pod) error
+
+    // UpdatePod takes a Kubernetes Pod and updates it within the provider.
+    UpdatePod(ctx context.Context, pod *corev1.Pod) error
+
+    // DeletePod takes a Kubernetes Pod and deletes it from the provider.
+    DeletePod(ctx context.Context, pod *corev1.Pod) error
+
+    // GetPod retrieves a pod by name from the provider (can be cached).
+    GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error)
+
+    // GetPodStatus retrieves the status of a pod by name from the provider.
+    GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error)
+
+    // GetPods retrieves a list of all pods running on the provider (can be cached).
+    GetPods(context.Context) ([]*corev1.Pod, error)
+}
+```
+
+- 例子
+    - 华为：CCE on CCI，不支持 DaemonSet
+    - 腾讯：EKS on CVM，不支持 DaemonSet
+    - AWS：Fargate
+    - Azure：ACI
+    - Alibaba：Viking on ECI
+
+***
+
+### 业界产品
+
+#### EasyFaas
+
+- 通过资源池方式降低冷启动
+
+#### SAE（serverless application engine）
+[当微服务遇上Serverless：解读云原生微服务最佳实践](https://mp.weixin.qq.com/s/EDWqMq8SBnIRjWO73aOQgw)
+- SAE 的 pr 稿，后续素材可以参考
+- SAE 是一款面向应用的 Serverless PaaS 平台，支持 Spring Cloud、Dubbo 等主流开发框架，用户可以零代码改造直接将应用部署到 SAE，并且按需使用，按量计费，可以充分发挥 Serverless 的优势为客户节省闲置资源成本，同时体验上采用全托管，免运维的方式，用户只需聚焦于核心业务开发，而应用生命周期管理，微服务管理，日志，监控等功能交由 SAE 完成。
+    - 原地升级
+    - 镜像预热
+    - 镜像加速
+    - Dragonfly
+[三大特性，多个场景，Serverless 应用引擎 SAE 全面升级](https://mp.weixin.qq.com/s/xyZQo40e9JojEPIF98GOjg)
+- 像是 sae 的全量功能，后面可以按照这个好好体验一下 sae
+
+[基于 eBPF 的 Serverless 多语言应用监控能力建设](https://mp.weixin.qq.com/s/WKYpAj5opUdxmOnL90eq1Q)
+- SAE 做的基于 eBPF 的监控，思路和 TEM 很像
+- 通过 sidecar 运行 eBPF 用户态程序
+- 协议支持 HTTP/mysql/redis 等
+
+#### virtual kubelet + kubevirt
+
+[后Kubernetes时代的虚拟机管理技术之kubevirt篇](https://mp.weixin.qq.com/s/WJmv-11elnMJ-aSZVSYbtw)
+- 两者的结合可以用来管理虚拟机
+
+[使用 Kubevirt 管理虚拟机](https://mp.weixin.qq.com/s/DOFKqybKSkiCi4qrQ4em5A)
+![a862c152a4f74c38f8fc3f721fa4858a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5151)
+- virt-api
+kubevirt 是以 CRD 形式去管理 vm pod， virt-api 就是所有虚拟化操作的入口，包括常规的 CRD 更新验证以及 vm start、stop
+- virt-controlller
+Virt-controller 会根据 vmi CRD，生成对应的 virt-lancher pod，并维护 CRD 的状态
+- virt-handler
+virt-handler 会以 Daemonset 形式部署在每个节点上，负责监控节点上每个虚拟机实例状态变化，一旦检测到状态变化，会进行响应并确保相应操作能达到所需（理想）状态。virt-handler 保持集群级 VMI Spec 与相应 libvirt 域之间的同步；报告 Libvirt 域状态和集群 Spec 的变化；调用以节点为中心的插件以满足 VMI Spec 定义的网络和存储要求。
+- virt-launcher
+每个 virt-lanuncher pod 对应着一个VMI， kubelet 只是负责 virt-lanuncher pod 运行状态，不会去关心 VMI 创建情况。
+virt-handler 会根据 CRD 参数配置去通知 virt-lanuncher 去使用本地 libvirtd 实例来启动VMI， virt-lanuncher 就会通过 pid 去管理VMI，如果 pod 生命周期结束，virt-lanuncher 也会去通知 VMI 去终止。
+每个 virt-lanuncher pod 对应一个 libvirtd，virt-lanuncher 通过 libvirtd 去管理 VM 的生命周期，这样做到去中心化，不再是以前虚拟机那套做法，一个 libvirtd 去管理多个VM。
+
+#### Knative
+
+[knative](evernote:///view/34874899/s39/04a35cfe-4125-41e9-9f9c-554454a62386/04a35cfe-4125-41e9-9f9c-554454a62386/)
+
+#### Kubeless
+
+#### OpenFaas
+
+***
+
+### webassembly
+
+既然 WebAssembly 可以在浏览器以外的地方运行，那么我们是否能把它用在 Serverless 领域？目前已经有人在这方面做了一些尝试，不过如果这种方案真的想落地的话，首先要考虑的就是如何解决运行中的 WebAssembly 对各种基础设施的依赖问题。
+
+![487ce4ff486acf9a59ad19a68d67533e.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3696)
+
+虽然现在 Layotto 中对 WASM 的使用还处于试验阶段，但我们希望它最终可以成为 Serverless 的一种实现形态，如上图所示，应用通过各种编程语言开发，然后统一编译成 WASM 文件，最后跑在 Layotto+MOSN 上面，而对于应用的运维管理统一由 k8s、docker、prometheus 等产品负责。
+
+***
+
+### OpenFunction quickdown
+
+https://mtrclive.huodongxing.com/?eid=4613389659923&roomid=368104963&td=2074148644057
+
+![fb7053dfbb8536dc90ac6b00bb9f938c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3734)
+![9f0d2f0f85628a5f4538ee5ba2678683.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3735)
+![858869ce6904dcd936a37a230a6e3e3f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3736)
+![396cdfa3261ed8fb63bfaed8bf7c8860.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3738)
+
+
+#### Faas 服务的问题
+
+- 缺乏标准/厂商锁定
+- 冷启动
+
+#### build
+
+![1d9c659cb32116449839f4feeeec56b9.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3737)
+
+***
+
+### Container Instance
+
+#### aliyun ECI
+
+##### aliyun ECI Ref
+
+[Giving Internet Access to an Alibaba Cloud Serverless K8s Pod](https://albertoroura.com/giving-internet-access-to-an-alibaba-cloud-serverless-k8s-pod/)
+- ECI 作为提供 CPU 和 MEM 的载体，交付之后扮演的是 Pod 的角色（CVM）
+
+[通过部署ACK虚拟节点组件创建ECI Pod](https://partners-intl.aliyun.com/help/zh/doc-detail/118970.htm?spm=a2c63.p38356.0.0.1fc5433fWxLVa9#task-1443354)
+![e8f7d4bb2b505ec0ab14c3bf29a35c58.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4453)
+> 让 Kubernetes 集群轻松获得极大的弹性能力，而不必受限于集群的节点计算容量。可以灵活动态地按需创建 ECI Pod，免去集群容量规划的麻烦
+
+[ECI实例概述](https://partners-intl.aliyun.com/help/zh/doc-detail/154527.htm?spm=a2c63.p38356.0.0.1fc5433fWxLVa9#task-2423216)
+
+##### 破茧成蝶 - Serverless Kubernetes 的思考与征程
+[没有银弹，只有取舍 - Serverless Kubernetes 的思考与征程（一） | 4star](https://mp.weixin.qq.com/s/1aMalQs-AE2L1aA5X20gJA)
+- 涵盖了两种 serverless kubernetes 的形态及优劣，nodeless 与 serverless container
+- nodeless 实际是 CA 的思路，只是向用户屏蔽了 node 的运维
+- serverless container 是 container instance 的思路，AWS Fargate、aliyun ACK、tencent EKS
+- 对比 nodeless 与 serverless container
+    - nodeless：
+        - 保留了节点的概念，支持DaemonSet，节点选择（nodeSelector）与节点亲和性（nodeAffinity）等与节点紧密相关的概念；
+        - 资源隔离不足、弹性效率低、资源碎片
+    - serverless container：
+        - 每一个Pod运行在一个独立的安全沙箱之中，采用虚拟化技术实现资源隔离和安全隔离，用户无需关注节点运维和安全修复，降低运维成本；
+        - 无资源争抢：每个Pod运行在一个独立的安全沙箱，也就意味着没有多个应用的相互资源干扰；
+        - 每个应用运行在独立的安全沙箱中，独占OS内核，默认强隔离，Serverless Container相比传统OS容器，大大提升了安全性；无资源碎片：
+        - 每个沙箱按照Pod实际申请资源进行分配，减少了资源碎片的产生，也无需进行频繁的资源重整；
+        - 更高的冷启动扩容效率：安全沙箱相比较创建一个完整的虚拟机有更多的优化手段；
+        - 不支持与节点相关的K8s概念：比如DaemonSet，Node Port等；
+        - 规模化较小：K8s中Kubelet, Kube Proxy 这样的节点组件会通过控制循环持续轮询API Server状态，实现节点状态与Pod真实运行状态、网络、配置的同步。这样的访问操作在Serverless Container环境下会大大膨胀。EKS每个集群最多只支持1000个Fargate，阿里云容器服务通过优化，每集群支持 20000 个任务型实例。但是仍然远小于ACK集群中支持的Pod数量；
+        - 额外的资源开销：每个 Serverless Container 由于拥有独立的内核，相比传统的OS容器会有额外的资源开销，此外Serverless Container 是自治的还有一定的管理资源开销
+![670129e92e71a96f5b77c63066bf1caa.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5955)
+
+[破茧成蝶 - Serverless Kubernetes 的思考与征程（二）| 5star](https://mp.weixin.qq.com/s/tNgVraNGxPlH9WQva7CF3Q)
+
+###### ECI 的前提
+
+1. 单一职责：每个 container 之间不共享 OS 内核，类似 kata 的轻量级 VM
+2. 不可变性：container 不支持原地变更，简化运维复杂性
+3. 位置无关：即不向应用层保证具体的物理节点、持久存储、固定 IP 等，无状态、临时性，这些使得容器可以在整个弹性资源池上进行供给和动态迁移
+
+通过这几个原则，重新定位了云平台与开发者之间的边界，尽可能让开发者聚焦于应用，而将资源调度、基础设施运维、高可用、系统优化等复杂性交给到基础设施完成。实现将复杂留给自己，将简单留给用户的技术初心
+
+###### ECI 的技术概览
+
+因为 ECI 基于 VM，但目标是为了提供与容器相似的使用体验，所以需要克服几个重要的技术挑战：
+1. 更快的启动速度：将沙箱容器启动速度从VM的分钟级下降到秒级
+2. 更低的性能损耗：减少由于引入虚拟化技术，带来的额外性能损耗，尤其是存储与网络的性能
+3. 更低的资源开销：尽可能降低由于引入沙箱技术额外增加的资源损耗，尤其是沙箱内部独占的 Guest OS 内核，系统管控组件等
+4. 有保障的库存供给：与 OS 容器在预分配集群资源进行调度不同，所有 Serverless Container 依靠云基础设施保障资源的按需供给，一旦库存不足或者创建失败，将影响业务发布与扩容
+
+###### ECI 数据面架构
+
+![8d6c0f83eaf85192a700c8548c5474f5.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5931)
+- 并池架构：阿里云在神龙架构上实现了 ECI 实例、ECS 实例、裸金属实例的`统一供给`，这样可以`充分利用阿里云整体弹性计算资源池保障弹性资源供给`；并且可以利用现有 ECS 规格实现`丰富的资源类型`，比如 GPU 实例、AMD、倚天实例等，以及地域覆盖；同时可以利用弹性计算资源池中的`碎片资源，提升整体利用率`。但是并池架构也存在一些挑战，比如，对每个 ECI 实例都会包含完整 ECI Agent、Container Runtime 等组件，会`占用较多的系统资源`。此外，在支持 ECS 与 ECI 混布的场景下，复用了虚拟机的存储网络编配流程，容器的`启动速度和并发度受限于整体链路效率`
+- 专属池架构：ECI 团队基于阿里云袋鼠沙箱容器实现一个面向容器场景的技术创新架构。架构特点是将 ECI Agent 中的 Container Runtime 等部分下沉到宿主机，只保留了必要的部分在 ECI 沙箱内部，`降低了整体资源占用`。同时可以利用容器镜像的特性`优化容器启动效率`，此外在管控链路和资源生产上也针对容器场景进行了优化
+
+###### 基于 ECI 的 ASK
+
+ASK （Serverless Kubernetes）是 ACK 集群的一个特殊类型，只支持 Serverless Container
+![0ac06f9545d8a2e242bffeab6c2f3c74.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5932)
+
+组成部分:
+1. ACK Scheduler - 是 ACK 增强的 K8s 调度器实现，除了增强批量任务、GPU 调度等能力之外，支持根据资源策略自动选择在 ECS 节点池或者 ECI 上进行调度和重调度
+2. Virtual Node Addon：作为 ECI 与 Kubernetes 架构之间的适配器，实现 ECI Pod 的生命周期管理，以适配部分 Node 相关的实现，比如 Metrics Server，Prometheus 的集成。Virtual Node 是集群中的一个逻辑概念而不是一个物理实体，不支持 NodePort，DaemonSet 等 Node 级别概念
+3. 在应用弹性层，ACK/ASK 也支持了众多的增强可以更好地帮助应用充分利用云的弹性能力，支持ECI这样的弹性新算力，比如 AHPA 可以根据 AI 算法预测弹性趋势，降低弹性的滞后性，阿里云也针对云的特性，扩展 Knative/KEDA 等应用弹性实现，比如更好地支持 Spot 类型弹性资源等，细节将在下篇中进行介绍
+
+###### 一些限制
+- **ASK 的限制**
+1. 由于 Serverless Container 中不再对外暴露 Node 的概念，Serverless K8s 不再支持节点网络模型，比如 NodePort 类型的 Service，HostPort 或者 HostNetwork
+2. 数据面与传统 kubernetes 不同
+![c87a1f08d61530929025a33254e48030.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5933)
+
+- **不支持 DaemonSet 的应对方式**
+1. Sidecar：
+![8cd012942009fb27e6bd7fb2ae74a072.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5934)
+该方案的缺点是：
+- 与 daemonset 节点模型不同，sidecar 与应用是一对一，增加了资源消耗
+- 与 daemonset 节点模型不同，sidecar 与应用容器生命周期耦合，对 sidecar 的配置变更也会导致应用容器重启
+2. Hidecar:
+整体与 Sidecar 类似，区别大概有两点：
+- 对用户不可见
+- 提供特权
+
+- 不支持资源超售
+在Serverless Container场景下，每个沙箱中只运行一个应用，目前ECI、Fargate都只支持Guaranteed QoS的Pod，不支持资源超售
+
+
+###### 基础设施管控对 ECI 高弹性的支持
+
+ECI 对比 VM 有着更高的弹性需求，生命周期普遍比 VM 小 1~2 个数量级，所以对基础设施的弹性有更高的需求，主要改进：
+- 不需要独立的ENI，可以通过阿里云网络 Mesh（ANSM）技术大大提升网络建联效率，从而实现更好的可伸缩性和更优的弹性
+- 避免通过 ECI OpenAPI 进行频繁的数据交换，降低对 ECI 管控链路的压力。比如，在 Serverless Kubernetes 中，对 Pod 的健康检查，Exec，日志，监控等场景，通过 ECI 沙箱中的 agent 与 API Server 之间的直接通信旁路了 ECI 管控，可以有效提升整体架构的可伸缩性
+- 此外在 API Server 中对 ECI 容器创建、删除等场景做了更细粒度的限流、降级机制实现，避免突发流量引发雪崩。未来也会增加优先级队列等方式，在底层资源发生流控的同时，优先保障高优先级任务的处理
+
+对 kubernetes 控制面 scalability 的挑战：
+- 利用不可变性（Immutability）最小化对 API Server 访问：比如，Pod 的 Volume 定义在运行时不会改变，ECI agent 自然不需要调用 API Server 对此类资源进行 watch
+- 降低单个 Serverless Container 对 API Server 资源消耗：比如加 cache
+
+###### Worker Node 与 Serverless Container 混合调度挑战
+
+![473f4babf8db2e3d3d222af81e74dc4c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5953)
+越来越多的ACK用户在使用ECS 作为Worker Nodes的同时，也在在弹性、计算类任务等场景应用 ECI。客户可以自由组合不同类型的弹性计算资源满足业务对资源确定性、成本等多方面需求。比如在ACK集群中，客户可以用包年包月的ECS节点池承载常态业务流量，用按量付费ECS节点池承载大促等可预期的业务波动，利用虚拟节点/ECI支持突发的业务流量
+
+###### 适合什么业务
+
+ASK
+- 高弹性、按量付费
+- 强隔离
+- 免运维
+
+ACK
+- 可控性
+- 更高的灵活性
+
+***
+
+### 冷启动
+
+#### 预热池
+
+- 通用预热池
+- 专用预热池
+
+#### 镜像缓存（盘）/ 分发 / 懒加载
+
+- Dragonfly：p2p 分发
+- Nudys：懒加载
+- OpenKruise：镜像缓存
+
+#### 轻量 runtime
+
+- firecracker
+- kata
+- WebAssembly
+
+#### snapstart
+
+[re:Invent 首日：硬件创新加速，Serverless 冷启动技术突破](https://mp.weixin.qq.com/s/ARwu517qQouZCyBXXy0Npg)
+- 解决 Serverless 冷启动问题的惯性思路是加入更多的缓存，但对于亚马逊云科技来说，成本开销的平衡必须被考虑其中，因此该方案还不够好。终版方案的关键之一在于引入了 Amazon Firecracker，这种发布于 2018 年的开源 KVM 虚拟化技术，以极低的开销和启动、关闭速度帮助亚马逊云科技搞定了 Lambda SnapStart 面对的技术问题。Firecracker 的每个实例被称为 microVM，每个 Firecracker microVM 仅使用大约 5 MiB，也就是 5.24 MB 的内存。这意味着可以在单个虚拟 CPU 上运行数千个 Firecracker microVM。
+- 借助 SnapStart，客户可以通过创建 Lambda 函数的快照来解决这个问题，然后只需启动它们而无需等待通常的初始化过程。也就是说，用户首次运行 Lambda 函数时，SnapStart 将执行标准初始化，并`创建内存和磁盘状态的加密快照并缓存以供重复使用`。当用户应用程序再次启动时，Lambda 从缓存的快照恢复新的执行环境，而不是从头开始初始化它们，从而提高启动性能。
+
+[New – Accelerate Your Lambda Functions with Lambda SnapStart](https://aws.amazon.com/cn/blogs/aws/new-accelerate-your-lambda-functions-with-lambda-snapstart/)
+- After you enable Lambda SnapStart for a particular Lambda function, publishing a new version of the function will trigger an optimization process. The process `launches your function and runs it through the entire Init phase. Then it takes an immutable, encrypted snapshot of the memory and disk state, and caches it for reuse.` When the function is subsequently invoked, the state is retrieved from the cache in chunks on an as-needed basis and used to populate the execution environment. This optimization makes invocation time faster and more predictable, since creating a fresh execution environment no longer requires a dedicated Init phase. 
+
+
+参考思路：[CRIU](evernote:///view/34874899/s39/179908ec-828c-4949-a8c2-aa379b134885/179908ec-828c-4949-a8c2-aa379b134885/) 容器 checkpoint、[Firecracker Snapshotting](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md)
+- CRIU 是进程级别的快照
+- Firecracker Snapshotting 是 OS 级别，This has some advantages (i.e. you don't have to care about file handles because they will be still valid after resume) but also some drawbacks (i.e. the need to reseed /dev/random and to sync the system clock).
+
+11 月 29 日，在 re: Invent 大会现场，Peter DeSantis 正式宣布推出新功能 Amazon Lambda SnapStart。利用 SnapStart 可将 Lambda 函数冷启动持续时间降低至不到 200 毫秒，延迟率降低 90%，使得冷启动跟非冷启动（缓存命中）几乎没有区别，那么这也就意味着“冷启动”的结束，Serverless 技术再次获得了里程碑式的进化！
+
+借助 SnapStart，客户可以通过创建 Lambda 函数的快照来解决这个问题，然后只需启动它们而无需等待通常的初始化过程。也就是说，用户首次运行 Lambda 函数时，SnapStart 将执行标准初始化，并`创建内存和磁盘状态的加密快照并缓存以供重复使用`。当用户应用程序再次启动时，Lambda 从缓存的快照恢复新的执行环境，而不是从头开始初始化它们，从而提高启动性能。
+
+![3926aed31d153b1f5bc5031c36511f9c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5703)
+
+- 一些限制：snapstart 会快照 Init 阶段的数据，所以如果你的代码依赖 Init 阶段产生的数据，可能会有问题，比如 Init 阶段产生的种子，比如 TCP 长链接
+
+进阶阅读：[Restoring Uniqueness in MicroVM Snapshots](https://deepai.org/publication/restoring-uniqueness-in-microvm-snapshots)
+
+##### snapstart 并不是无侵入的
+
+因为 SnapStart 这类技术需要客户的应用程序对 SnapStart 进行适配，否则会出现程序正确性问题。今天 AWS 支持了这个技术，做了大量基础库、三方库的适配，虽然简化了客户的复杂度，但最终仍然需要客户自己保证正确性。因此阿里云提供了一些保证兼容性的方案，希望通过持续优化尽可能减少用户的适配负担。
+
+
+目前，阿里云主要通过`预留和闲置处理冷启动问题`
+
+#### cold start base on CRIU
+
+**基于 CRIU**
+![50cc16a49524305039149da52c92c927.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5781)
+
+[华为云发布冷启动加速解决方案：助力Serverless计算速度提升90%+ | 5star](https://mp.weixin.qq.com/s/P47BAs5c4RgYarj0sXmztQ)
+- 除开 cold start，还介绍了java 的通用急速方案
+    - AOT：主要有 GraalVM [1] 、EJET 等，AOT 方案是通过在程序运行前，直接将 Java 源码编译成本地机器码，因为提前编译并不占用运行时间，以此来显著提升应用的启动速度，同时本地机器码可以持久化于磁盘中，不占用内存且可重复使用。但是该类方案在特定场景也存在一定的局限性，如 GraalVM 对反射的支持并不友好，在涉及反射的地方都需要新增配置；EJET 虽然解决了反射的问题，但是其编译时间较长且不稳定，在复杂应用场景下也存在性能劣化问题。
+    - AppCDS：AppCDS 方案是通过在 JVM 启动时从 JSA 文件读取共享数据，省略了共享类的加载过程，提升 JVM 启动速度；同时，多个 JVM 共享同一个归档文件，减少动态内存占用，可以提升内存使用率。该类方案主要适用于类加载比较多的场景，在一般场景下提升有限，且其对共享类的支持有一定限制，如运行时动态生成类不支持共享等。
+- 当用户 Java 函数打开冷启动加速的配置开关后，华为云 FunctionGraph 会预先执行函数对应的初始化代码，获取其初始化执行上下文环境的快照，并进行加密缓存。后续调用该函数并触发冷启动扩容时，会直接从提前初始化后的应用快照来恢复执行环境，而非重新走一遍初始化流程，以此达到极大提升启动性能的效果。
+
+##### 步骤
+
+![b30d754797f3a3c9623787b3e9de4823.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5780)
+注意：有一个 Restore Hook 的创新，应用进程从快照恢复后，执行 Restore Hook 完成业务状态的刷新
+1. 在 Source 机器上启动微服务，通过健康检查和初始化调用后，进行 Checkpoint，停止服务，生成进程快照信息；
+2. 在 Source 机器上将进程快照信息和微服务所有相关依赖，进行压缩，加密生成内存快照包，并上传至云端存储。
+3. 在 Target 机器上从持久化存储中下载对应微服务的内存快照包，进行解压恢复。
+4. 在 Target 机器上 Restore 微服务进程；
+
+##### CRIU
+
+- checkpoint
+    - CRIU 首先通过操作系统的 /proc 目录获取指定进程和该进程下所有子进程的信息，包含文件描述符 (/proc/$pid/fd)、管道参数、网络配置和内存映射文件 (/proc/$pid/maps) 等；
+    - CRIU 接着通过 Linux 的 ptrace syscall 接口把一段特殊代码动态注入到该进程的地址空间，通过执行该动态代码，CRIU 以 UNIX 守护进程的方式收集 dumpee 进程存放在寄存器里的内存数据；
+    - CRIU 将所有进程信息都收集完毕后，再次调用 ptrace 接口，去掉动态注入的代码，恢复该进程的原有代码；
+    - CRIU 根据收集的进程内存信息，生成多个以功能分类的镜像文件，并默认杀死进程，完成 Checkpoint；
+- restore
+    - CRIU 解析 Checkpoint 阶段生成的镜像文件，并分析多进程的共享资源；
+    - CRIU 通过 Linux 的 fork 接口重新构建、恢复进程和其共享资源；
+    - CRIU 恢复所有任务的资源，但不包含内存映射地址，定时器，线程等；
+    - CRIU 根据镜像文件重新映射内存空间，切换进程上下文，恢复进程的继续执行，完成 Restore；
+
+##### 局限性
+
+通过快照恢复后，应用的网络连接状态会受到影响，涉及到 TCP Socket 重连等场景，如服务注册、DB 连接，分布式通信，消息队列等。
+

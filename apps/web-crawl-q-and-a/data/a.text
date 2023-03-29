@@ -1,0 +1,551 @@
+## 调度/混部
+
+[TOC]
+
+![edfef6cd49bf4294265696e0164b5fee.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5706)
+
+
+***
+
+### Ref
+
+[百度混部实践系列 | 如何提高 K8S 集群资源利用率？| 4star](https://mp.weixin.qq.com/s/8FK97u0XtaaU059bmcDqeg)
+- 引入动态资源视图，即 workload 的实时负载视图
+> 也就是说通过构建资源视图，可以将 Limit 大于 Request 的 Pod 或者没填 Request 和 Limit 的 Pod，调用到真实用量更少的 Node。这个方法可以解决由于不知道机器到底用了多少资源，所以调度失败被驱逐的问题，最终达到提升 CPU 利用率的效果。
+- 对资源分级：A<<B<C<D，A：bestEffort，B：normal，C：stable，D：非混部
+> 比如 K8S 集群中托管的机器没开混部，定价可能是 D（假设 D 为1）；在开了混部的集群当中，用户去用这些 Request，价格可能就是0.85；在开了混部的很多集群当中，用户用 Limit 部分的话，价格可能就是 0.5；如果用 Besteffort 部分，那可能它的价格是 0.1。
+- 提到了HCPA的概念，根据当前集群负载做弹缩
+
+[深入理解百度在离线混部技术 | 5star](https://mp.weixin.qq.com/s/ZqWWj_jPo_y4YObYieDJXQ)
+- 原生 kubernetes 基于静态视图分配
+- 混布系统架构图
+![5a30a0693b4d579d127ce4eeb229122e.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5637)
+- 两层视图：动态资源视图
+![e9b1c0453190896a1bb36bbe492ca76c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5638)
+
+[最佳实践｜Kubernetes集群利用率提升的思路和实现方式](https://mp.weixin.qq.com/s/NRd7G1c_SkjHSZYBLFgncA)
+- 最常使用的是 Burstable 模式，该模式下用户设置 Request 值与 Limit 值，同时要求 Request 值小于 Limit 值，通过二者数值的调整可以实现实际场景下利用率的提升。
+- 动态Pod压缩
+![f548c5fa370b893227354a676ce8e026.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5641)
+如上图所示，我们可以看到 Pod 被分配至节点 A、B、C 上，其中 Pod A、Pod B 的 CPU Usage 较低，这种情况下可以对 Pod A、Pod B 进行压缩，将其余待调度的 Pod 放置在该节点，以实现平均 CPU 负载提升的目的。
+Limit 不变，对 Request 值进行压缩时，一个节点可以容纳更多的 Pod。
+- Node节点超卖
+![e34d840f90662cb0bff77153dbcd79d6.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5642)
+如上图所示，假设左侧节点为30核，若能通过一系列的手段让Kubelet、Kubernetes调度器认为该节点为60核，那是不是就能够调度更多的Pod呢？
+- 碎片整理
+![e86bf35b2831c0a627f9b669b3352962.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5643)
+![b86203b43fae8cf2ddfc63114a8e6568.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5644)
+这种情况下，可以Pod E从节点B调度至节点A ，以此增加节点B的空闲资源来满足未调度的Pod G的需求。这就是碎片资源整理的过程。
+![3094e1c5a49cdd802bde7fa7d35801f8.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5645)
+- 在离线混部
+![3cac1a5166d5a229b9cf3eba6ce3b22b.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5646)
+其实现逻辑较为简单：当集群资源充足时，动态地将离线任务调度到空闲节点上；当节点资源接近高负载阈值时，优先驱逐离线任务。
+- 两级扩容：CA + virtual kubelet
+![f0aa78888efe034c9cc4fb1e564ffd8a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5647)
+- 两级动态超卖
+![cc0dd19f04ff46460a4149d551661349.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5648)
+通常情况况下，Pod压缩与Node超卖两种手段需同时使用。Pod压缩已实现从静态到动态的优化，其压缩比（Request/limit）可以根据历史状态进行动态修改。
+同样，Node超卖也实现了由静态向动态的升级，Node节点可以根据实时负载进行动态调整，以防止节点负载过高。
+- 动态调度：根据真实负载调度
+![6838c85d33154a4a927b3827227c8d20.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5649)
+上图可以看到，原生调度为静态调度且Node2空闲资源较多，那么根据静态调度策略，会将新的Pod调度到Node2节点中。但经过动态调度的算法优化，实际上会将Pod调度到Node1节点上，这是什么原因呢？
+这是因为Node1节点的真实利用率更低所致的，将Pod调度至Node1上会提高Node的Pod利用率，进而使各节点的平均负载相近。
+![c91a94d27ad5a4c1ae15db097ded6b78.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5650)
+- 动态驱逐：Descdeduler？
+![3678163c641c57484962ed30849e8225.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5651)
+当Node负载不均或Node利用率过高时，大概率会对节点上运行的Pod资源产生影响。这种情况下，我们可以根据节点当前的状态信息以及节点上Pod的实际利用率对Pod进行动态驱逐。这里的参考维度是多样的，一般包括：CPU、Memory、FD、Inode等，且不同业务针对参数的权重与指标也存在差异。
+
+[谷歌每年节省上亿美金，资源利用率高达60%，用的技术有多厉害！](https://mp.weixin.qq.com/s/AoOFF1RztZmC4vAamnsaOw)
+这篇文章讲了 TKE 的在线离线业务混部方案，以提高资源利用率
+- 离线业务的资源大框
+- 类似CCE Turbo文章中讲述的共享状态的调度器
+- cpuset（cpu绑核）、cpushare、cpuquota
+- 快感知慢回退预测
+![7979b837d29b40e1bd082d7cfb0dc3ae.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5887)
+
+***
+
+### 混部
+
+#### 定义
+
+所谓混部技术，就是通过调度、资源隔离等手段，将不同类型、不同优先级的在离线业务部署在相同的物理机器上，并且保证业务的SLO，最终达到提高资源利用率、降低成本的目的。
+![463e073c19aa7d0592d20e56053f13de.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5652)
+
+#### 在线与离线业务特定
+
+##### 在线
+
+- 资源冗余
+- 资源利用率不高
+- 延迟敏感
+
+##### 离线
+
+- 延迟不敏感
+- 资源常态不足
+
+#### 预备知识
+
+##### CFS cpu调度
+
+[资源隔离技术之CPU隔离](https://mp.weixin.qq.com/s/q-O2L-6_DMwhjCjGVAvmrg)
+
+CFS（Completely Fair Scheduler，完全公平调度器)模型，每个CPU都有一个运行队列rq，每个rq会有一个cfs_rq运行队列，该结构包含一棵红黑树rb_tree，用来链接调度实体se，每次只能调度一个se到cpu上去运行。如果想要在任意时刻cfs_rq上的se运行时间都尽可能的接近，那么就需要不停地切换se上cpu运行，但是频繁的切换会有开销，想要减小这种开销，就需要减少切换的次数。为了可以减小开销还能保证时间上的统一，内核便给cfs_rq的se进行排序，让他们按照时间顺序挂在rb_tree上，这样每次取红黑树最左边的se，就可以得到运行时间的最小的那个。但实际上，se又会有优先级的概念，不同优先级的se所分配到的cpu时间片是不一样的（内核代码[4]的注释中提到，相差一个nice值，可能有约10%cpu的时间差）。内核便经过一系列公式的转换，可以得到一样的值，这个转换后的值称作虚拟运行时间vruntime，CFS实际上只需要保证每个任务运行的虚拟时间是相等的即可。
+
+![ec760c0ad97ec676e3ccd2fc9b623e80.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5653)
+
+每次挑选se上cpu运行，当分配的时间片用完，就会将它再放回到cfs_rq中，挂在红黑树的适当位置。当然也有可能会碰到运行过程中，时间片还未用完，但主动放弃运行的情况，如睡眠（TASK_INTERRUPTIBLE）或等待某种资源（TASK_UNINTERRUPTIBLE），这时就需要出列等待，进到“小黑屋”，直至相应事件发生才会再次放到红黑树中等待调度。等待后重新放入红黑树的se，如果休眠时间比较长，vruntime可能会非常小，便会迅速得到运行。为了避免其疯狂地执行，cfs_rq上会维护min_vruntime，如果新唤醒的vruntime(se) < vruntime (cfs_rq→min_vruntime)，会将se的vruntime修正至接近min_vruntime，这样就可以保证此类se优先执行，但是又不会疯狂执行。
+
+
+#### 百度在离线混部技术
+
+##### 原生kubernetes基于静态视图分配
+
+![ea1386dfd283375d420f963bfbd4c38f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5654)
+
+上图显示了一个节点的 CPU 使用率和分配率，分配率为 89%， 使用率在 0-16 点之间都在 20% 以下，17 点开始是用量高峰，在 30-40% 之间。可以看出 request 和 used 之间有大量的资源处于闲置状态，如果想让这部分资源可以重复利用起来，就需要调度更多的 Pod 上去，但是从 Kubernetes 调度器视角来看，已经没有更多的 CPU 分给 Pod 了。
+
+##### 动态资源视图
+
+![69e91d399e750eecfc9bd540d65be45a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5655)
+
+##### 使用BestEffort为离线任务建模
+
+- 解决了在离线视图冲突问题，离线使用的BestEffort模型，对在线不可见
+- 兼容社区组件，比如cadvisor可以直接使用
+- 无需修改已有组件，包括kubelet containerd runc，侵入性小，可以直接安装混部系统，享受混部带来的资源效能提升
+
+##### 原生kubernetes的QOS缺陷
+
+在发生驱逐时，kubelet并不会参考该pod的QOS级别。假如是不可压缩资源且存在超发，则驱逐掉超发最大的pod；如果不存在超发，则驱逐掉用量最大的pod。也就是说在没有超发的情况下，Guaranteed是可能被干掉而Burstable活下来。
+
+##### 百度离线调度器
+
+- CPU编排
+感知CPU拓扑、绑核、NUMA架构，且无需kubelet开启绑核支持（因为部署了agent）
+
+- CPU调度算法：对于离线任务，增加一种cpu调度算法/优先级
+已有的cpu调度算法：rt（实时）、cfs（公平）
+增加一种针对离线的调度优先级，优先级最低：offline
+![38b73db847a8afa433bc8982fd9903cd.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5656)
+
+- 内存
+linux系统中，cache是惰性回收的，且不区分优先级，如果离线任务占用了大量的cache，而在线业务cache被回收，会影响在线业务的QOS
+    - 每个容器后台周期自动回收自己产生的page cache
+    - 每个容器都可以设置开关和自己的高低水位线
+    
+- 网络
+流量达标、流线限制
+
+![ed5f66443117054302e3a6fea33b4a62.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5657)
+
+- 单机资源管理
+    - 当整机CPU/MEM/network用量接近或超过一定用量，比如X=50%时，会压缩、驱逐离线使用的资源
+
+- 高性能调度器
+    - 在线业务不会频繁变更，对调度器要求较低；离线任务则相反
+
+- 资源画像
+    - 预测：虽然单机调度会针对性压制离线任务，但是显然会影响历险业务的稳定性，如果在调度时可以预测到节点上未来一段时间的在线使用量，可以针对性的调度离线任务。
+    ![741a3d0ed9be7730ffa8b44e4ea47a1f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5658)
+    - 在线任务利用资源画像+预测可以避免热点，离线任务则可以提升排队时间和执行时间以及稳定性。
+
+- 一些TODO：
+    - 异构资源
+    - 多云混部
+    - ebpf
+***
+
+### Caelus 全场景在离线混部的思考与实践
+
+[Caelus全场景在离线混部的思考与实践 | 5star](https://mp.weixin.qq.com/s/z1A1U23PBl1lx4Gy5f1jaw)
+
+#### 预测
+
+在混部过程中，预测可以指导我们为离线服务预留资源量，否则就只能根据历史经验对离线可用资源量进行预估。
+
+#### 干扰检测与处理
+
+干扰检测与处理是混部的放大器。以CPU资源管理为例，为了更好地保护在线业务，我们可以采用CPUset隔离核的方式，让离线任务只能运行在共享池，不允许复用绑定池资源。这会带来绑定池空闲资源无法被利用，而共享池资源被离线作业严重挤压问题。
+因此基于权重的共享CPU管理方式让离线应用可以复用所有空闲资源，同时调低离线任务的权重来降低对在线CPU资源的抢占，并采用quota与period结合的形式来限制离线业务对资源的使用。
+
+为了更好地保证在线服务质量，需要干扰检测与处理机制。该机制全方位实时检测在线是否受到干扰，并采取措施，如压制离线资源或驱逐离线任务，及时消除干扰。
+
+![e8340fa285d149125c68a04b2cf620e2.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5659)
+
+#### 混布资源管理方式
+
+对于离线任务只能复用部分空闲资源问题，我们考虑把离线进程放入独立cgroup目录下。
+
+#### 全维度资源隔离
+
+资源隔离是混部的基础，全维度资源隔离能够避免离线在单一维度上的资源挤占对在线造成影响。
+![6c03a39e40fefbb57d77d4d6a23cc99f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5660)
+
+#### 多调度器协同
+
+若采用多个调度器基于全局锁进行协调，调度器在进行调度前需要先获得锁，才能进行调度。这种方式并发度低、资源利用率低，故又被称为“悲观并发”。
+当前，我们采用的是“多调度器+协调器”的方式进行调度，它也被称为基于共享状态的“乐观并发”。
+![a0df3ee693d32255e4309386322191bf.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5661)
+
+#### 容器热迁移
+
+容器热迁移可以很好地解决需长时间运行的离线任务被驱逐所产生的问题。
+容器热迁移是指在保证离线任务正常运行的前提下，从一个节点迁移到另一个节点。
+
+当前基于虚拟机的热迁移技术已经十分成熟，但基于容器的热迁移技术的探索及实践都较少。腾讯内部基于容器热迁移进行了诸多实践与优化，以内存迁移为例，常规的内存迁移是先停掉原节点离线任务，再将离线任务一次性迁移至目标节点后重新运行。这种方式会造成离线任务的中断时间较长，质量难以保证。
+
+我们采取了诸多策略保障中断时间尽量短，如采用内存按需迁移，同时在迁移过程中，采用压缩、并发方式加大内存存储速率。另外，我们也探索更加均衡的迁移策略，如采用迭代迁移方式。
+
+***
+
+### B站云原生混部技术实践
+
+[B站云原生混部技术实践 | 5star](https://mp.weixin.qq.com/s/pPEkfrLm0XEpgMU1KjiD4A)
+
+定义：所谓混部技术，就是通过调度、资源隔离等手段，将不同类型、不同优先级的在离线业务部署在相同的物理机器上，并且保证业务的SLO，最终达到提高资源利用率、降低成本的目的。
+
+#### 场景
+##### 在离线混布
+这类混部场景的难点在于：（1）调度层。a. 混部任务不能影响在线任务的整体配额容量，例如机器一共64核，如果混部任务直接申请32核的cpu request资源，那就会造成该机器只能调度32c的在线业务容器。b. 调度器需要动态感知到各个节点可混部资源量的变化，资源空闲越多的节点调度越多的混部任务。（2）节点层。混部任务一旦调度到某个k8s节点后，在cpu、内存、磁盘、网络等各个资源层面都有可能对在线任务产生“竞争”，因此需要随时感知在线任务的负载情况并做相应的隔离管控，尽量做到对在线任务零干扰。
+
+##### 离线间混部。
+离线集群整体的cpu使用率较高，但部分时段也存在一定的资源闲置，例如训练平台在训练任务较少时整体利用率会偏低。由于都是离线任务，延时敏感性没有在线那么高，因此这类场景除了混部转码任务外，还可以混部一些更“重”的大数据任务。但是大数据任务通常用yarn调度，如何将k8s调度和yarn调度进行协调是我们需要解决的关键问题。实现了大数据混部后，我们就可以做到各个离线业务互相出让资源。例如将hdfs datanode机器接入k8s用于混部转码任务；反过来，转码的机器上也可以运行hadoop/spark等大数据任务。
+
+##### 闲置机器混部。
+IDC通常会存在一定量的备机，用于各业务应急场景使用，但是日常是闲置的。这部分机器我们也会自动化接入k8s跑混部任务，当业务需要借调备机时再自动下线混部。
+
+#### 在离线混布
+
+##### 架构
+![4606b9e76bd1b62e457aeb987424bca3.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5662)
+- 任务提交模块。caster是我们的在线业务发布平台，crm则是离线批处理任务提交平台。crm可以支持多集群调度、混部资源余量统计、混部资源quota管控等。
+- k8s调度模块。kube-scheduler为原生的在线任务调度器，而job-scheduler是我们自研的离线任务调度器，能支持转码任务的高并发调度。另外webhook负责对离线任务的资源配额进行动态转换，转换为自定义的k8s扩展资源。
+- colocation-agent。每个k8s节点上都会部署混部agent，负责混部算力动态计算和上报、资源隔离、监控数据上报等。
+- colocation config manager。在大规模k8s集群中，各类节点的混部配置存在一定的差异性，同时也存在动态更新的需求。该模块负责对混部配置进行集中管控，支持策略下发、开关混部等功能。
+- 混部的可观测性。每个节点的agent负责采集节点中的一些混部指标，例如：可混部资源量、实际的混部资源用量等，最终上报给prometheus进行看板展示。可观测性对于排查单机的混部问题非常有用，我们可以很方便地通过监控曲线来查看某个时刻的混部资源使用情况。同时，我们也可以随时查看整体集群的混部算力使用趋势。
+
+##### 原生调度器的基本原理及问题
+k8s的每个节点都会上报节点资源总量（例如allocatable cpu）。对于一个待调度的pod，k8s调度器会查看pod的资源请求配额（例如cpu reqeust）以及相关调度约束，然后经过预选和优选阶段，最终挑选出一个最佳的node用于部署该pod。如果混部任务直接使用这套原生的调度机制会存在几个问题：1）混部pod会占用原生的资源配额（例如cpu request），这会导致在线任务发布的时候没有可用资源；2）原生调度本质是静态调度，没有考虑机器实际负载，因此没法有效地将混部任务调度到实际负载有空闲的机器上。
+
+##### 基于扩展资源的混部调度
+![f556ae47494c7ff4748a2b81215a5e76.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5663)
+- colocation agent模块中，策略组件会实时加载当前接收到的混部配置，并调用autopilot组件进行混部算力的计算，然后通过device-plugin组件上报混部扩展资源，例如caster.io/colocation-cpu
+- 混部任务在申请资源配额时，仍然申请原生cpu资源，但是会增加pod标签“caster.io/resource-type: colocation”。k8s webhook模块根据标签识别到混部pod，然后将pod申请的资源修改为混部扩展资源。这种方式对业务层屏蔽了底层扩展资源，通过标注pod标签即可指定是否使用混部资源。
+![8f0bb984583de81f39c076c4f38efa7a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5664)
+- 混部调度器job-scheduler根据pod申请的扩展资源量以及各个节点上报的混部扩展资源量进行调度。
+    
+##### 在线QoS保障
+- 任务调度。根据前文所述的混部任务调度机制，混部调度器可以实时感知各节点的可混部资源量，因此可以从全局视角将混部任务调度到资源充足的节点上。
+- 资源隔离。节点混部agent可以秒级检测在线负载变化，根据安全水位值计算当前可混部资源量，然后通过cgroup及时进行资源限制。
+- 任务驱逐。离线的混部任务一般都是可重试的，因此驱逐可以作为一种兜底手段。
+
+##### 资源隔离的手段
+
+- 混布大框
+在前面的介绍中我们提到webhook会对混部任务申请的资源类型进行修改，去除原生的资源类型request.cpu和request.memory，改成caster.io/colocation-cpu和caster.io/colocation-memory。由于没有申请原生资源类型，那么k8s会自动将这类pod归类为best effort类型，并且最终通过runc将该类pod的cgroup设置到/sys/fs/cgroup/cpu/kubepods/besteffort目录，我们称为“混部大框”。
+![c50bbbb3764d7f71f58761c2ce13ddf7.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5665)
+
+- cpu动态隔离
+在cgroup层面，我们给大框设置了最小的cpu share值，保证在资源争抢时，混部任务获得cpu时间片的权重最小。colocation agent中的cgroup manager组件负责动态地调整“混部大框”的cpu quota，从而对混部任务进行整体的资源限制。当colocation agent检测到在线负载降低时，就会调大“混部大框”的cpu quota，让混部任务充分利用空闲的算力。当在线负载升高时，则是缩小“混部大框”的cpu quota，快速让出资源给在线业务使用。
+
+- 驱逐机制
+混部agent层支持内存、磁盘、cpu load等维度的驱逐机制。当任意资源负载达到设置的驱逐水位时，agent会立即驱逐机器上的混部任务。为了防止任务在同一台机器上被频繁驱逐，需要在驱逐后设置一定的冷却时间，冷却期内禁止调度混部任务。
+
+#### 离线间混布
+![1bfe638206385ada2bae1136b22504a5.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5666)
+
+***
+
+### Crane 如何做到利用率提升3倍稳定性还不受损？
+
+[Crane如何做到利用率提升3倍稳定性还不受损？ | 5star](https://mp.weixin.qq.com/s/yE-qyxW0TlklrjlSb8M03Q)
+- 之前聊到 crane 都是从资源推荐的角度去看，这里从混部角度看 crane
+> 在提升部署密度的同时保证延迟敏感和高优业务的稳定性和服务质量不受干扰
+![d488bb428acb3dad948d274b874fb261.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5667)
+
+#### crane 混部能力概述
+
+- 资源检测：`节点负载画像与弹性资源回收 Crane 实时采集节点利用率数据，并基于多种预测算法计算出未来的闲置资源，为节点构建画像，并将其以扩展资源形式更新成节点可调度资源。弹性资源的多少随高优业务真实用量变化，高优业务用量上升，弹性资源减少。`
+- 资源使用：`弹性资源再分配 低优业务使用弹性资源`，调度器确保低优业务首次调度时有足够弹性资源可用，防止节点过载。
+- 冲突避免：基于自定义水位线的干扰检测和`主动回避`能力
+    - NodeQoS API 允许集群运维定义节点水位，包括总 CPU 水位，或者弹性资源分配率、弹性资源水位等，并定义当真实用量达到水位时的回避动作。
+    - PodQoS API 定义不同类型工作负载的资源隔离策略，如 CPU 调度优先级，磁盘 IO 等，同时定义该类型业务允许的回避动作。
+    - AvoidanceAction 定义调度禁止、压制、驱逐等动作参数，当节点水位被触发，只有允许某个动作的业务 Pod 才可以执行该操作。
+- 资源隔离：基于内核隔离的增强 QoS 能力 Crane 的开源方案中，可以通过动态调节 CGroup `压制干扰源资源上限`。同时，为支撑大规模生产系统的的隔离需求，Crane 基于腾讯 RUE 内核，通过多级 CPU 调度优先级，以及`绝对抢占`等特性，保证`高优业务不受低优业务的影响`。
+- 重调度：支持模拟调度的优雅驱逐等增强的重调度能力 当压制不足以抑制干扰时，就需要从节点中驱逐低优 Pod 以确保高优业务的服务质量。Crane 支持模拟调度的优雅驱逐重调度能力能够借助集群全局视角和预调度能力降低重调度对应用的影响。
+
+``` mermaid
+graph LR
+A[离在线混部]
+A --> B[实时资源用量检测]
+B --> B1[多渠道采集]
+B --> B2[实时资源使用量视图-CR]
+B --> B3[弹性算力通过 ExtendedResource 方式挂在 Node Status 上]
+B --> B4[应用资源预测]
+A --> C[离在线资源调度器]
+C --> C1[ExtendedResource 方式]
+C --> C2[重调度]
+A --> D[内核级强资源隔离能力]
+D --> D1[cgroup 压制]
+D --> D2[驱逐]
+D --> D3[关闭节点调度]
+D --> D4[内核级 cpu QoS 调度支持]
+```
+
+##### 资源检测
+
+混部的第一步是从集群中识别出闲置资源并转换成可被临时借用的弹性算力，并更新成为节点可分配资源。Crane 借助资源预测和本地实时检测两种手段计算节点可用弹性资源。
+
+Crane Agent 启动时会自动依据如下的默认模版为节点创建TSP对象，Craned 中的资源预测组件获取该 TSP 对象以后立即读取节点资源用量历史，通过内置预测算法进行预测，并将预测结果更新至 TSP.Status。
+
+实时弹性 CPU ： 弹性CPU = 节点可分配CPU*（1-预留比例） -（节点实际CPU用量 - 弹性资源用量 + 绑核业务独占的CPU）
+- 节点可分配 CPU ：节点可分配 CPU，即 Node.Status.Allocatable.CPU
+- 预留比例：保证始终有一定的空闲资源不能被复用，保证集群的稳定
+- 节点实际 CPU 用量：节点实际的 CPU 用量，即 node_cpu_seconds_total
+- 弹性资源用量：节点实际用量包含了使用弹性资源的部分业务，而这部分开销是是弹性资源，因此需要算入弹性 CPU 中
+- 绑核业务独占的 CPU ：被业务绑定的CPU不可二次分配，因此需要再弹性 CPU 中扣除
+
+![a00be158bd52740e577eb5e16f493937.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5668)
+
+##### 资源使用
+
+弹性资源更新成为节点 Allocatable Resource 以后，低优业务即可通过资源声明将弹性资源利用起来，Kubernetes 调度器确保节点弹性资源能够满足业务需求才能成功调度。（extended resource）
+
+``` yaml
+spec: 
+   containers:
+   - image: nginx
+     name: extended-resource-demo
+     resources:
+       limits:
+         gocrane.io/cpu: "2"
+         gocrane.io/memory: "2000Mi"
+       requests:
+         gocrane.io/cpu: "2"
+         gocrane.io/memory: "2000Mi"
+```
+
+##### 冲突避免
+
+更高的部署密度意味着业务面临的资源竞争的可能性更大。Crane 实时对节点和应用进行多维度的指标检测，通过灵活可配的异常定义规则和筛选策略，判断干扰是否发生，并且在干扰发生时牺牲低优Pod以确保高优业务的服务等级不变。
+
+- 指标采集
+基于多种手段：通过解析系统文件、调用 cAdvisor 接口、eBPF Hook 等多种手段，采集包括 CPU 利用率、CPI、虚拟机 CPU Steal Time、内存利用率、进出网络流量和磁盘读写 IO 等指标，Crane 用户也可以编写插件采集自定义指标。
+![5c0ad18cc67e932ca3b754cf40ae8890.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5669)
+- 干扰判断
+在 State Collector 定期采集全维度指标以后，stateMap 会交由 Analyzer 进行干扰判断。
+![2c4a756d45cc91639052000b935a2eb2.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5670)
+- 措施
+当前支持 Scheduling Disable（关闭节点调度）、Throttle（通过Cgroup调节Pod的可用资源上限）, Eviction（驱逐Pod）三类操作操作；同时，如果节点干扰消失，Crane Agent 也会自行执行逆操作，恢复节点和业务的资源配置状态。
+- 支持优雅的重调度器
+Crane Agent 是运行在每个节点的 Daemonset Pod，它所做的决策都是基于节点而缺乏全局视角。当多个节点同时发生干扰，Agent 需要对某低优业务进行驱逐时，若无 PDB 对最大可用副本数进行保护，很可能会导致该业务的多个 Pod 同时被驱逐，进而造成服务质量下降。Crane Agent 支持与中心化部署的重调度器联动，由 Crane Agent 为待驱逐 Pod 打上标签，并交由重调度器统一进行驱逐。Crane 增强的 Descheduler 支持优雅驱逐能力，包括：
+    - 支持模拟调度，集群资源不足时可停止驱逐，该过程模拟 Filter，PreFilter 过程，不仅包含了 Scheduler 默认包含的插件，同时支持调度器扩展插件，模拟实际调度过程
+    - 有全局视图，在多 Workload 并行，同一 Workload 内串行驱逐，适用于固定时间窗口腾空节点和基于特定标签批量驱逐 Pod/Workload/母机的场景
+    - 可以通过先扩容后缩容的方式实现无感驱逐，保证 Workload 可用性
+![6a10d4800deedb77678a5c56b6e75724.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5671)
+
+##### 资源隔离
+
+如意，TencentOS RUE(Resource Utilization Enhancement)，是 TencentOS 产品矩阵 中一款专为云原生场景下服务器资源 QoS 设计，提升资源利用率，降低运营成本的产品。如意统一调度分配云上机器的 CPU、IO、网络、内存等资源，相比传统的服务器资源管理方案，如意更适用于云场景，能够显著提升云上机器的资源使用效率，降低云上客户的运营成本，为公有云、混合云、私有云等客户提供资源增值服务。如意的核心技术能做到不同优先级的业务之间不互相干扰，实现资源利用率、资源隔离性能、资源服务质量的高效统一。
+
+![dbe17e55d524d072f6a59a8a2b940566.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5672)
+
+以干扰最容易发生的CPU资源为例，如意 CPU QoS 允许用户将服务器上的容器划分成不同优先级，根据优先级分配 CPU 资源，保障低优先级容器不会对高优先级容器造成干扰(包括调度时延，CPU 使用时间等)，同时允许低优先级容器使用空闲 CPU 资源，从而提升 CPU 利用率，降低计算成本。
+
+![c009a5a4cb346edd9af578c3958665bf.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5673)
+![6781f40780e562ce45d78ac8d6ec7f15.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5674)
+![72d476daeef209e57cd3b9f645f8d2db.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5675)
+
+***
+
+### 火山引擎云原生大数据在金融行业的实践
+
+[火山引擎云原生大数据在金融行业的实践 | 5star](https://developer.volcengine.com/articles/7171790641839243301)
+
+#### 大数据迁移云原生的难点
+- 需要改造
+- Flink、Spark，其 AM-Task 作业形态难以直接在云原生系统上部署
+- 不具备与 Hadoop YARN 队列类似的多租户管理能力
+- 不具备作业排队能力，不具备作业级调度策略
+- 云原生系统的原生调度器吞吐能力差
+
+#### Serverless YARN 的 Hadoop 方式部署
+- 在 K8s 系统上模拟实现了 YARN 系统，传统作业可以像往常一样提交和运行，不需要进行任何改造，完全感知不到 K8s 的存在
+    ![c40f2ed5d361abf175e6f86839a62751.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5689)
+- 自研 scheduler
+- 增强 node agent
+
+#### 基于 Arcee Operator 的云原生方式部署
+- Arcee 借鉴了 YARN 的两级管理模式，管理大数据作业的 Application Master，再由 AM 管理计算 Worker
+    ![98b567ec85c92350894e7d74d0b1bbc0.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5690)
+    
+#### 资源调度
+
+- 三层模型：多集群级别、集群级别、Node级别
+    ![3bc23b72616dee288f0180abefe2e5f8.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5691)
+##### GRO Scheduler
+
+- 集群级别，GRO Scheduler 参考 YARN 等大数据调度器，在 Pod 放置的基础上，增加了 Quota 管控；强调了【队列】（Queue CRD，多租户）概念、强调了【作业】（PodGroup CRD，pod 优先级）概念；
+    ![35459c108361d1b9b7863fd035ad17cb.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5692)
+- GRO 对于优先级的支持包括：【队列间抢占】、【队列内抢占】、【大作业资源预留】；且 GRO Scheduler 采用批式调度，具有极高的【调度吞吐】
+
+##### GRO Agent
+
+在线服务和大数据作业可以运行在一个集群，不可避免地也会运行在一个节点上。但是大数据作业的运行特性是大幅利用机器资源，是有可能会影响到在线服务的
+
+因此，GRO Agent 部署到每个节点上，用于【增强单机隔离性】
+
+单机隔离手段包括 CPU（调度权重、核心隔离）、内存（独立内存水位）、磁盘（IOPS/带宽限制）、网络（网络打标流量限制）等多个层面
+
+GRO Agent 支持在线 SLA 保障机制，监控节点上在线服务的运行情况，结合业务指标、资源指标、基础指标等，在必要情况下，可以驱逐大数据 Pod，或者通知调度器重新迁移在线服务，以保障在线服务的稳定性
+
+##### 资源视图
+
+GRO 支持闲置资源利用，实现资源超发，更进一步提高资源利用率，降低成本。
+
+举例来说，一个 4 核的 Flink Pod，在高峰期资源使用率是 3.9 核，但是低谷期资源使用率只有 0.2 核。因此不能简单的减少 Flink Pod 的资源申请量，但是低谷期时会存在资源的大量浪费。因此 GRO 可以在低谷期时，调度一个低优的 Pod，利用空闲的 3.8 核资源。
+
+运行流程简述：
+
+- GRO Agent 监控所有 Pod 的资源使用情况，结合实时/历史资源变化曲线，实时计算出节点上可以被重复利用的闲置资源量（BestEffort 资源）；
+- GRO Agent 上报 BE 资源量到 GRO Scheduler；
+- GRO Scheduler 调度有预期的低优作业到节点上使用 BE 资源；
+- GRO Agent 通过单机隔离机制保障正常 Pod 的稳定性和性能；
+- GRO Agent 根据 BE 资源变化情况压缩混部 Pod 资源或者驱逐混部 Pod
+
+##### ResLake 跨集群资源湖
+![193e3f165f9101a56bd843214e3885d7.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5693)
+
+ResLake 提供了【全局虚拟队列】。 每个虚拟队列对应不同机房或集群的多个队列。用户提交作业到虚拟队列，ResLake 考虑资源情况、存储亲和性等因素，自动分发到合适的机房、集群和队列
+
+ResLake 还提供了【全局 Quota 管控】。 ResLake 在调度作业时，会考虑 Quota 约束、数据局部性、机房拓扑、自定义约束等条件
+
+还提供多种容灾能力：【迁移容灾】、【多活容灾】、【高可用容灾】
+
+#### 总结
+火山引擎云原生大数据平台致力于金融行业云原生大数据解决方案：
+
+- Serverless YARN：基于云原生的 YARN 解决方案
+- Arcee Operator：基于云原生的大数据统一 Operator
+- GRO：基于云原生的高性能资源管理调度器
+- ResLake：基于云原生的多机房统一资源湖
+![8f318f55a35f4448aee8b2d2877e8109.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5694)
+
+***
+
+### 如何提高 Kubernetes 集群资源利用率？
+
+[如何提高 Kubernetes 集群资源利用率？| 5star](https://mp.weixin.qq.com/s?__biz=Mzg5Mjc3MjIyMA==&mid=2247544556&idx=1&sn=9d4700f68fce2e7850765ab08eb675ff&source=41#wechat_redirect)
+
+#### 添加一个 Agent
+
+##### 动态资源视图
+
+![45b7428944e1d735c75ca9f80ef4f102.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5828)
+
+> 添加一个 Agent 去收集单机的真实资源用量情况，并且汇总计算得到动态的资源视图（机器真实的用量情况），将其上报到调度器
+
+所谓上报到调度器，应该是将资源上报到一个自定义 CR 中，然后自定义的调度器读取 CR 并做调度
+
+##### 资源压制
+
+也是通过 Agent 来实现
+> 基于这个原理团队设计了对应的压制策略，单机引擎会根据 Guaranteed-Pod 的真实用量去给 Burstable 目录整体设置了一个值，这个值通过动态计算而来。简单来说，会先计算一下 Guaranteed-Pod 现在用多少，还剩多少资源可以给到 Burstable。BestEffort 也是类似的，会先计算 Guaranteed 和 Burstable 现在的 Pod 的用量是多少，然后给框整体设定一个值。
+> 
+> 此时会通过动态计算缩小 Burstable 和 BestEffort 的这两个框的值，达到一个压制的效果。
+> 
+> 当资源用量持续上涨时，如果 BestEffort 框整体 CPU 用量小于 1c ，单机引擎会把 BestEffort Pod 全部驱逐掉。Kubernetes 本身在单机发生资源紧张的时候，也是会按照这种顺序去驱逐相应的 Pod。当 Guaranteed-Pod 的用量还在持续上涨的时候，就会持续的压低 Burstable 整框 CPU 的 Quota，从而达到压制的效果。
+
+##### 成本模型
+
+![de9a1ae296232d846a90effd2e935e15.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5829)
+> 比如 Kubernetes 集群中托管的机器没开混部，定价可能是D（假设 D 为 1）；在开了混部的集群当中，用户去用这些 Request，价格可能就是 0.85；在开了混部的很多集群当中，用户用 Limit 部分的话，价格可能就是 0.5；如果用 Besteffort 部分，那可能它的价格是 0.1。
+> 
+> 通过这种方式，找到了第一批的这个种子用户。不管是在线业务、离线业务、测试业务，还有一些内部 DevOps 业务，都非常愿意根据这个成本模型再重新审视自己的业务模型，选择对应的资源等级来运行自己的业务。
+
+##### 内核隔离+热点迁移
+
+
+除了内核提供的隔离技术外，如何给出热点问题的兜底方案？
+答案是热点迁移，出现热点，系统自动迁移容器。具体而言，单机引擎会通过收集应用的一些指标来判断这个应用是否发生热点。如果发生热点的话，就会给一个机器上打一个 Annotation，然后当调度器 Watch 到这个 Annotation 时，它就会认为台机器上发生了热点，就要迁移热点容器。
+
+##### 调度器性能优化
+
+在集群负载较高时，用户创建的 BestEffort Pod 由于资源不足导致全部 Pending，而这些 Pending Pod 会反复的出现在调度队列中，针对这种场景，我们尝试对离线调度器进行功能和性能上的优化：
+- 副本数托管：基于集群负载对应用进行动态扩缩容。社区叫 HCPA，用户通过创建一个 CR 来描述任务的最低的副本数是多少，最高的副本数是多少，当集群负载发生变化的时候，Controller 可以动态的扩缩用户的任务副本数，而不再是静态的创建出海量的 Pending Pod， 阻塞在队列中。
+- 多调度器：基于质量的多调度器。对 Besteffort 的容器来说， 在调度时调度器并不关心静态资源视图，也就是 Node Allocatable Resource。调度器只关心这台机器上现在还剩多少可用资源，所以在资源视图的角度，天然就和其他两种质量的 Pod 不冲突。基于这个前提，我们将 Guaranteed 和 Burstable 两种类型的 Pod 归并到一个调度器内进行调度， 而 BestEffort 类型的 Pod 则在另外一个离线调度器内调度。
+- `等价类合并`：在一个调度周期内， 使用相同 Pod Template 生成的 Pod，在进行调度计算时一定会得到相同的 Node 列表。基于这个前提，在调度上我们构造了等价类的概念，在调度时单位从 Pod 变成了 PodEquivalenceGroup。在优选结束后，会按照 Node 分数的顺序来依次调度 PodEquivalenceGroup 中的所有 Pod。这样处理相当于将 O(n) 的调度计算降为了 O(1)。
+- `乐观并发调度`：目前开源的 Kubernetes 调度器， 无论是默认调度器还是社区的 kube-batch，Volcano 都是依次进行调度的，队头阻塞的现象较为严重。在优先级相同的情况下，最后一个 Pod 的调度延迟约等于队列内所有 Pod 的调度延迟之和。并发的关键在于如何解决冲突：在调度器内存中为每一个 Node 维护了一个版本号，当 Pod 与 Node 进行 Bind 操作时，会尝试对 Node 版本号进行 +1 的 CAS 操作，如果失败，则说明该 Node 已经发生过 Bind 操作，此时会将该 Node 重算并重新尝试调度。基于 CAS + Version 的机制，我们实现了同优先级情况下，Pod 并发调度的方案。该方案可以带来 4 ~ 8 倍的调度性能提升。
+
+***
+
+### 资源隔离技术之内存隔离
+[资源隔离技术之内存隔离 | 5star](https://mp.weixin.qq.com/s/66LxGlCBhSLg510Hfwk7xw)
+
+![89a0cf7a6d59754d0aa00f7bd7bae6a1.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5949)
+假设 NodeA 表示 cgroup A 的 memory.usage_in_bytes，SelfA 表示 cgroup A 自身使用的内存，那么有：
+NodeA = NodeC + NodeD + SelfA; NodeC = NodeF + NodeG + SelfC;
+LimitA >= NodeA
+LimitC >= NodeC
+
+因此尽管 LimitC 可以超过 LimitA，但实际 NodeC 仍然受到 LimitA 的限制，例如上图 LimitC 为 300M，LimitA 为 200M，当 UsageC 到达 200M 时，NodeA 必然也达到 200M，此时达到 LimitA 就会在 A 点发生 mem cgroup 级别的直接内存回收。
+
+回收之后，若能从 C 回收一定量的内存，则 C 的内存分配可以继续，反之则 A 发生 mem cgroup 级别的 OOM，从 C 子树中选择得分最高的进程 kill，回收其内存满足 C 的内存使用申请。因此可保证 C 实际使用的内存永远不会超过其父 A 节点的 limit 限制。
+
+![3b1b0a24ccb010b48de2fdd0bf78ed06.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5950)
+如果 NodeD 达到 60MB，则可能在 cgroup C 中选择一个在线业务杀死，这是不可接受的
+
+为此我们希望OOM能尽可能选取不重要的离线任务，避免kill在线业务，这就是memcg OOM优先级配置功能要解决的问题，通过在进行OOM操作时，首先判定memcg的优先级，选择低优先级的memcg进行OOM操作。
+
+#### 优先级
+
+| 接口 | 说明 |
+| --- | --- |
+| memory.use_priority_oom | 该接口用于设置是否启用memcg OOM优先级策略功能，取值为0或者1。该接口不会继承，默认值为0。取值为0时，表示禁用memcg OOM优先级策略功能。取值为1时，表示开启memcgOOM优先级策略功能。 |
+| memory.priority | 该接口提供13个级别的memcg优先级以支持不同重要程度的业务。取值范围为0~12，数值越大表示优先级越高。该接口不会继承，默认值为0。实现一定程度的内存QoS，此处需要说明的优先级值非全局变量，只能在同父cgroup下的兄弟节点进行比较。对于优先级相等的兄弟节点来说，会按照组的内存使用量来排序选择内存使用最大的进行OOM操作。 |
+
+![eac923f96c7c52e1614ac2ba6238016a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5951)
+如果A节点开启OOM 优先级功能，则从A开始遍历选择优先级最小的子memcg节点，此处为D，然后再遍历D的子节点选择优先级最小的节点，层层遍历后找到了优先级为2的H叶子节点；最后按正常的OOM打分机制，从H中选择内存使用量最大的进程kill掉，若杀光H的任务也无法满足需求，则会到上层选择最低优先级的D继续OOM流程，这样就确保了高优先级的C、F、G最后才会被选中，降低了其任务被杀死的概率。
+
+即使单论优先级大小，H节点的memory.priority(priority为2)大于F节点的memory.priority值(priority为1)，但由于层级关系，先从C、D中选择了优先级更低的D，只能从D下选择叶子节点H。
+
+#### 后台异步回收
+
+可以通过提前回收任务缓存，降低 usage 内存打到 limit 概率，进而减少内存分配上下文中的 memcg 级别直接内存回收，memcg 后台异步回收功能就可以帮助我们做到这一点
+
+提前异步回收掉不活跃的Page Cache，避免之后usage达到limit时，在进程的内存请求过程中触发memcg级别的直接内存回收
+
+| 接口 | 说明 |
+| --- | --- |
+| memory.wmark_ratio | 该接口用于设置是否启用memcg后台异步回收功能，以及设置异步回收功能开始工作的memcg内存水位线。单位是相对于memcg limit的百分之几。会继承父组的值，取值范围：0~100。默认值为0，该值也表示禁用memcg后台异步回收功能。取值为非0时，表示开启memcg后台异步回收功能并设置对应的水位线。 |
+| memory.wmark_high | 只读接口，说明如下：当memcg内存使用超过该接口的值时，后台异步回收功能启动。该接口的值由(memory.limit_in_bytes * memory.wmark_ratio / 100)计算获得。memcg后台异步回收功能被禁用时，memory.wmark_high默认为一个极大值，从而达到永不触发后台异步回收功能的目的。memcg根组目录下不存在该接口文件。 |
+| memory.wmark_low | 只读接口，说明如下：当memcg内存使用低于该接口的值时，后台异步回收结束。该接口的值由memory.wmark_high - memory.limit_in_bytes * memory.wmark_scale_factor / 10000计算得出。memcg根组目录下不存在该接口文件。 |
+| memory.wmark_scale_factor | 该接口用于控制memory.wmark_high和memory.wmark_low之间的间隔。单位是相对于memcg limit的万分之几。取值范围：1~1000该接口在创建时，会继承父组的值（该值为50），该值也是默认值，即memcg limit的千分之五。memcg根组目录不存在该接口文件。 |
+![960bd12ee2518709bde0693eb558c557.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5952)
+D 使用 60MB 内存，当 C 使用内存到达 100M，A 的 usage 必然达到 160M，而 A 触发异步回收的水线就是 160M，则此刻 A 子树的内存分配上下文中会利用工作队列调度一个 work 执行内存回收工作，此内存回收过程不包含于进程的内存分配上下文，属于异步内存回收，不会增加进程的 page fault 延时。
+
+
+***
+
+### 一些项目
+
+#### volcano
+
+[用 Volcano 填补私有集群的空闲时间](https://mp.weixin.qq.com/s/GAooduWQ88k3qhoTvbAhWw)
+- 和上面说的一样，离在线混部的一个调度器
+
+#### koordinator
+TODO
+- [爱奇艺：基于龙蜥与 Koordinator 在离线混部的实践解析 | 龙蜥技术](https://mp.weixin.qq.com/s/BFwtROPL8VeFg2ZZpgKMJQ) 文章本身一般，记录一下，后续看看云栖大会的回放
+
+- [多类型负载协调员Koordinator | 4star](http://qiankunli.github.io/2022/12/17/koordinator.html)
+    - 对 Koordinator 的概述，混部调度器的要点基本都讲到了
+    - 完全的云原生，基于 scheduler framework
+    - 状态自闭环：QoS、实时数据采集、重调度、强隔离
+    - 智能化：应用画像、资源视图、资源预测
+
+
+![7979b837d29b40e1bd082d7cfb0dc3ae.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5887)
+

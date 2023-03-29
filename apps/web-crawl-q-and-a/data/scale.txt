@@ -1,0 +1,325 @@
+## 弹性伸缩
+
+[TOC]
+
+
+***
+
+### Ref
+
+[Kubernetes Pod垂直自动伸缩][100.1]
+[Kubernetes 的自动伸缩你用对了吗？4star][100.2]
+- 清晰的讲解了HPA、VPA、CA
+- 有一个详细分析调度pod的最长耗时case
+- 提供了一些缩短调度时间的思路
+    - 尽量避免被动创建新节点 - 大容量节点
+    - 主动创建新节点 - 空低优先级pod占位node
+- 简单讨论了资源配置的选择（requests、limits）
+    - 远低于平均使用量（超卖）：超卖严重，过度使用节点。kubelet 负载高，稳定性差
+    - 匹配平均使用量
+    - 尽量接近限制：会造成资源的利用率低，浪费资源。这种通常被称为 QoS Quality of Service class 中的 Guaranteed 级别，Pod 不会被终止和驱逐
+[Kubernetes HPA：基于 Prometheus 自定义指标的可控弹性伸缩][100.3]
+[How to autoscale apps on Kubernetes with custom metrics][100.4]
+[official | hpa walk through][100.5]
+[Kubernetes集群低成本高弹性架构 | 4star][100.6]
+- HPA：调度层弹性组件，Kubernetes 内置，Pod 水平伸缩组件，主要面向在线业务。
+- VPA：调度层弹性组件，Kubernetes 社区开源，Pod 垂直伸缩组件，主要面向大型单体应用。适用于无法水平扩展的应用，通常是在 Pod 出现异常恢复时生效。
+    - 更新正在运行的 Pod 资源配置是 VPA 的一项试验性功能，会导致 Pod 的重建和重启，而且有可能被调度到其他的 Node 上。
+    - VPA 对 Pod 资源 requests 的修改值可能超过实际的资源上限，例如 Node 资源上限、空闲资源或资源配额，
+- CA：资源层弹性组件，Kubernetes 社区开源，Node 水平伸缩组件。全场景适用。
+    - 基于资源的使用率来触发应用副本的变化，也就是调度单元（ Pod ）的变化。而当集群的调度水位达到 100% 的时候会触发资源层的弹性扩容，当 Node 资源弹出后，无法调度的 Pod 会自动调度到新弹出的 Node 上，从而降低整个应用的负载状况。
+![9eba67c758fc586a242c5400b811450c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5198)
+- virtual Node: Virtual Node（虚拟节点）是各大云厂商基于社区开源项目 Virtual Kubelet而开发的插件，作为一种虚拟的 Kubelet 用来连接 Kubernetes 集群和其他平台的 API。Virtual Kubelet 的主要场景是将 Kubernetes API 扩展到无服务器的容器平台。
+    - Virtual Kubelet 是基于 Kubelet 的典型特性实现，向上伪装成 Kubelet，从而模拟出 Node 对象，对接 Kubernetes 的原生资源对象；向下提供 API，可对接其他资源管理平台提供的 Provider。不同的平台通过实现 Virtual Kubelet 定义的方法，允许 Node 由其对应的 Provider 提供支持，实现 Serverless，也可以通过 Provider 纳管其他 Kubernetes 集群。
+    - Virtual Kubelet 模拟了 Node 资源对象，并负责对 Pod 调度到 Virtual Kubelet 伪装的虚拟节点之后，对 Pod 进行生命周期管理。
+    - 从 Kubernetes API Server 的角度来看，Virtual Kubelet 看起来像普通的 Kubelet，但其关键区别在于 Virtual Kubelet 在其他地方调度 Pod ，例如在云无服务器 API 中，而不是在真实 Node 上。
+
+[100.1]: https://devops.cloudcared.cn/2021/07/07/bbbfe7f5a901/
+[100.2]: https://mp.weixin.qq.com/s/wzNwSU10XaQHWYusdJ9qDg
+[100.3]: https://mp.weixin.qq.com/s/f_bzvWm3E8q1OrSaleIjvg
+[100.4]: https://learnk8s.io/autoscaling-apps-kubernetes
+[100.5]: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/
+[100.6]: https://mp.weixin.qq.com/s/bhVN9AILe1LgNqECrMNG6Q
+
+***
+
+### Base
+
+#### 基本上都是基于prometheus搞的
+
+- 比如自定义弹性指标
+![68c0aa798a47e5fa3469bc4e7b4ac996.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4393)
+
+- 比如VPA
+![1a51e2ca117e670ba95caa43a815a181.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3664)
+
+- 比如crane
+![ffbaf48b17c4565bf9e32915dfddefd5.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4394)
+
+***
+
+### 分类
+
+- hpa
+HPA 定期检查内存和 CPU 等指标，自动调整 Deployment 中的副本数，比如流量变化
+- hpc
+- vpa
+- CA
+- 节点超卖
+Node 资源超卖方案是针对 Node 级别的资源调整方案，通过AdmissionWebhook[13]修改K8s Node的Allocatable 实现， 达到在使用率较低的情况下，将原本较小的资源扩展为逻辑上较大的资源来处理。例如原有CPU为4核，超卖2倍则是可将这个CPU视作8核。这里面又分为静态超卖以及动态超卖
+
+***
+
+### HPA
+
+#### HPA 的不足
+
+- 扩容滞后：首要问题便是基于监控指标的扩缩容存在滞后性，当探测到指标达到阈值并扩容启动服务，会有一定的时间差。这就导致服务在高峰来临的时候才开始扩容，此时如果扩容机制出现异常（集群资源不足、依赖项异常导致启动失败等原因) 还会引发更大的危机。
+- 监控故障影响服务稳定性：因为 HPA 是基于监控指标进行自动伸缩，在低峰期完成缩容后，如果因为监控系统故障而导致在高峰期无法扩容，则会对线上服务的稳定性造成非常大的影响。而在以往，监控系统的故障只影响服务的可观测性。
+- 指标毛刺造成实例数抖动：有些服务的监控指标可能不是平滑的（尤其是 CPU 使用率之类的系统指标），会存在间断性的毛刺。这类指标应用到 HPA 的时候会造成服务实例数的抖动，进行非预期的反复扩容与缩容。虽然可以通过 HPA 的稳定时间窗口参数来减少抖动次数，但效果有限。
+
+#### HPA base
+[Rancher 生态中K3S集群的三种HPA配置试用 | 4star][400.0.0.1]
+- 介绍了hpa 三类metrics
+- 介绍了v2beta2的多指标
+- 有demo
+
+[400.0.0.1]: https://mp.weixin.qq.com/s/Jg50A2m73KIm11Mvr2I5Kg
+##### 三类metrics
+
+[link][400.0.1]
+
+> Essentially the HPA controller get metrics from three different APIs: metrics.k8s.io,custom.metrics.k8s.io, and external.metrics.k8s.io. Kubernetes is awesome because you can extend its API and that is how these metric APIs are designed. The resource metrics, the metrics.k8s.io API, is implemented by the metrics-server. For custom and external metrics, the API is implemented by a 3rd party vendor or you can write your own. Currently I know of the prometheus adapter and custom stackdriver adapter that both implement custom and external metrics API. Check out these k8s docs on the topic for details.
+
+![51361b87a23fc2f7c3e3c98482dfdf10.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4790)
+
+[400.0.1]: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#support-for-metrics-apis
+
+
+#### 基于业务指标的弹缩
+[How To Use Prometheus Adapter to Autoscale Custom Metrics Deployments][400.0.6]
+[github | prometheus adapter | configuration walkthroughs][400.0.7]
+[github | prometheus adapter | configuration reference][400.0.5]
+[Kubernetes自定义监控指标——Prometheus Adapter][400.0.8]
+![7c19b613a2e23b6b4b06091ff7de1dff.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4737)
+![46443d261097cfb19dcaf66d2dc1eeb8.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5106)
+
+[Prometheus Custom Metrics Adapter][400.0.9]
+
+![cad5a2591d9919bb8e5fe004e0b9a62f.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4730)
+
+[400.0.6]: https://hackernoon.com/how-to-use-prometheus-adapter-to-autoscale-custom-metrics-deployments-p1p3tl0
+[400.0.7]: https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/docs/config-walkthrough.md
+[400.0.8]: https://www.cnblogs.com/zhangmingcheng/p/15773348.html
+[400.0.9]: https://rancher.com/docs/rancher/v2.0-v2.4/en/cluster-admin/tools/cluster-monitoring/custom-metrics/
+[400.0.5]: https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/docs/config.md
+
+#### keda
+##### keda 的优势
+- `原生支持很多scaler，开箱即用`
+- `方便扩展，增加自己的scaler`
+- 支持多指标的聚合（多triggers）
+- 能够聚合多个source，共用 external.metrics.k8s.io
+- `支持缩容到0，以及从0 -> 1`
+- `支持hpc`
+
+
+***
+
+### VPA
+
+#### 原生 VPA
+- 只会改变request，不会改变limits
+- 感觉是先缩后扩？很危险
+- 对其他维度的扩展怎么样
+- 支持dry-run模式
+    - updateMode: Off
+    - updateMode: Auto
+- 不能与HPA一起使用
+
+
+![1a51e2ca117e670ba95caa43a815a181.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3664)
+
+[中国工商银行容器在线纵向扩容的创新实践 | 4star](https://mp.weixin.qq.com/s/VFYblOnEG2VbjnBbaqXdiA)
+- 这篇通过CGroup的调整，实现VPA无需重启，对如何操作讲得比较细致，可以参考
+[B站容器云平台VPA技术实践](https://mp.weixin.qq.com/s/LFytnn2m732aOwbHEtc1Mg)
+- VPA一般需要具备以下三种关键能力:
+    - 容器资源规格推荐
+    - 对于新创建的Pod，需要基于k8s webhook，在创建Pod对象的过程中将资源规格修改为推荐值
+    - 对于已经创建的Pod，需要定时动态调整容器的资源规格（需要 in-place update 的支持）
+- B 站整体架构：
+![25c888518ae1dd99d5127ddc2a32bfe6.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5902)
+
+
+#### 一些热迁移思路
+
+- VM 热迁移
+- [CRIU](evernote:///view/34874899/s39/179908ec-828c-4949-a8c2-aa379b134885/179908ec-828c-4949-a8c2-aa379b134885/) 支持容器热迁移
+
+#### in-place VPA
+
+
+- [In-place VPA merged](https://github.com/kubernetes/kubernetes/pull/102884)
+- [In-place VPA merged 2](https://github.com/kubernetes/enhancements/pull/686)
+- [In-place VPA Description](https://github.com/kubernetes/enhancements/issues/1287)
+![43cda1e84d3df90edddd2764a41fb1d8.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5935)
+- [In-place VPA proposal | KEP 1287](https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/1287-in-place-update-pod-resources)
+    - 核心思想是：PodSpec 中标识资源的字段是可变的
+    
+- [Pod 原地垂直伸缩 - 一个四年的KEP和两年的PR | 4star](https://mp.weixin.qq.com/s/Vw3e0dWwqZGpO2pzKvdmKA)
+    - 这篇文章是对以上官方 KEP 的翻译/总结
+***
+
+### CA
+![37f5f8f6439001386c3160b1658b6ada.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5105)
+![91ed1f091e5952d0d8ff262486bd0aa4.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5400)
+
+#### 组件
+
+- Autoscaler：核心模块，负责整体扩缩容功能
+- Estimator：负责评估计算扩容
+- Simulator：负责模拟调度，计算缩容
+- Cloud Provider：抽象了CloudProvider及NodeGroup等相关接口，与云API交互
+
+#### CA如何工作
+
+- 扩容
+CA 是面向事件工作的，并每 10 秒检查一次是否存在不可调度（Pending）的 Pod。
+当调度器无法找到可以容纳 Pod 的节点时，这个 Pod 是不可调度的。
+此时，CA 开始创建新节点：CA 扫描集群并检查是否有不可调度的 Pod。
+
+- 缩容
+每 10 秒，当请求（request）利用率低于 50%时，CA 才会决定删除节点。
+CA 会汇总同一个节点上的所有 Pod 的 CPU 和内存请求。小于节点容量的一半，就会考虑对当前节点进行缩减。
+需要注意的是，CA 不考虑实际的 CPU 和内存使用或者限制（limit），只看请求（request）。
+移除节点之前，CA 会：
+检查 Pod 确保可以调度到其他节点上。
+检查节点，避免节点被过早的销毁，比如两个节点的请求都低于 50%。
+
+#### CA + HPA
+
+![c3b8b4bdd0b836316542f86bba55461f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5107)
+
+#### 扩展CA
+
+[Airbnb 的动态 Kubernetes 集群扩缩容 | 4star](https://mp.weixin.qq.com/s/f_bzvWm3E8q1OrSaleIjvg)
+> 提出了一种设计，将扩展职责从 Cluster Autoscaler 的核心逻辑中分离出来。我们设计了一种可插拔的 自定义扩展器[5] ，它实现了gRPC客户端(类似 custom cloud provider[6] )，该自定义扩展器分为两个组件。
+> 第一个组件是内置到 Cluster Autoscaler 中的 gRPC 客户端，这个 Expander 与 Cluster Autoscaler 中的其他扩展器遵循相同的接口，负责将 Cluster Autoscaler 中的有效节点组信息转换为定义好的 protobuf 格式(见下文)，并接收来自gRPC 服务端的输出，将其转换回 Cluster Autoscaler 要扩展的最终的可选列表。
+> 第二个组件是 gRPC 服务端，这需要由用户实现，该服务端作为一个独立的应用或服务运行。通过客户端传递的信息以及复杂的扩展逻辑来选择需要扩容的节点组。当前通过 gRPC 传递的 protobuf 消息是 Cluster Autoscaler 中传递给 Expander 的内容的(略微)转换版本。
+![bbbd9064f4921797d27595b2b6a86478.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5396)
+> 由于服务端作为一个独立的应用运行，因此可以在 Cluster Autoscaler 外开发扩展逻辑，且 gRPC 服务端可以根据用户需求实现自定义，因此这种方案对整个社区来说也非常有用。
+
+***
+
+### crane
+
+#### crane-ref
+
+[github][600.1]
+[Effective HPA：预测未来的弹性伸缩产品][600.2]
+
+[600.1]: https://github.com/gocrane/crane
+[600.2]: https://mp.weixin.qq.com/s/3qFwWIA2kBTpVz0utwc7mQ
+
+#### 架构及组成
+
+![073bf1ba0ef2656753d2bf3637a2ed26.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5353)
+
+Crane EHPA 采用类似 Proxy 的方式来增加预测功能，减少对原有架构的侵入性，在整体架构中的位置见上图左上角部分。
+原先的弹性架构主要包括以下组件：
+- HPA Controller：KubeControllerManager 进程中的一个控制器，可以循环监听 hpa 的阈值配置以及指标数据的实时值来判断是否需要扩缩容，是自动扩缩容的核心组件。
+- PrometheusAdapter：通过一系列配置规则，作为适配器打通 K8S Apiserver 与 Prometheus。通过 K8S Aggregation API 机制注册到 APIService 的形式，使得能通过查询 K8S Apiserver 来间接获取 Prometheus 中的数据，用来作为自定义指标的数据源。
+- MetricsServer：查询节点或 Pod 实时资源（CPU、内存等）使用的指标数据源，HPA Controller 的 Resources 类型阈值会查询该数据源。
+- Prometheus：查询各种指标历史数据的数据源，HPA Controller 的 Pods、External 类型阈值会查询该数据源，同时也提供预测功能的历史数据。
+
+在引入 Crane EHPA 之后，主要增加了以下两个组件：
+- Craned：Craned 的 EHPA Controller 会监听 EHPA 对象来创建/更新对应的 HPA 对象和 TSP 对象。其中 HPA 对象还是由 HPA Controller 管理，而 Craned 的 Predicator 模块则会基于 TSP 对象的配置来生成对应指标的预测数据。
+- MetricsAdapter：代替 PrometheusAdapter 注册到 APIService，作为PrometheusAdapter 的 Proxy。当要读取预测指标的数据时，会根据预测数据来返回数据；否则转发到 PrometheusAdapter。
+
+#### crane-base
+
+- 是否需要daemonset
+
+- VPA是怎么做到的
+
+- 基于预测？
+因为是一种预测模型，那么对于自定义指标以及实时扩缩的需求支持怎么样
+基于历史数据预测，预测算法percentile（Resource），DSP（HPA）
+    - 时间上的周期性
+    > Many businesses are naturally cyclical in time series, especially for those that directly or indirectly serve "people". This periodicity is determined by the regularity of people’s daily activities. For example, people are accustomed to ordering take-out at noon and in the evenings; there are always traffic peaks in the morning and evening; even for services that don't have such obvious patterns, such as searching, the amount of requests at night is much lower than that during business hours. For applications related to this kind of business, it is a natural idea to infer the next day's metrics from the historical data of the past few days, or to infer the coming Monday's access traffic from the data of last Monday. With predicted metrics or traffic patterns in the next 24 hours, we can better manage our application instances, stabilize our system, and meanwhile, reduce the cost.
+
+- 限制
+    - Existing at least one ready pod
+    - Ready pod ratio should larger that 50%
+    - Must provide cpu request for pod spec
+    - The workload should be running for **at least a week** to get enough metrics to forecast
+    - The workload's cpu load should be predictable, **too low or too unstable workload often is unpredictable**
+
+- 推荐算法
+> Algorithm define the algorithm type and params to do predict for the metric. Now there are two kinds of algorithms:
+**dsp** is an algorithm to forcasting a time series, it is based on FFT(Fast Fourier Transform), it is good at predicting some time series with seasonality and periods.
+**percentile** is an algorithm to estimate a time series, and find a recommended value to represent the past time series, it is based on exponentially-decaying weights historgram statistics. it is used to estimate a time series, it is not good at to predict a time sequences, although the percentile can output a time series predicted data, but it is all the same value. so if you want to predict a time sequences, dsp is a better choice.
+
+- 架构长什么样？
+
+- 演示一下
+
+- EHPA是怎么工作的，EHPA如何与HPA转换
+
+- 需要额外的那些计算资源
+
+- 扩展点
+
+- 快扩慢缩
+
+
+***
+
+### 谈一谈企业级弹性伸缩与优化建设
+
+[谈一谈企业级弹性伸缩与优化建设 | 5star](https://mp.weixin.qq.com/s/TbP-fFl6VXcqI25yZfGipg)
+- 弹性伸缩的一个企业级案例
+
+#### Node资源组成
+![3753f974b4da73bb64af6df5fdcc7762.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5398)
+
+#### 弹性优化的思路
+![ab205b7d97575d5f51a981db4902b529.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5399)
+
+##### Node超卖
+
+Node 资源超卖方案是针对 Node 级别的资源调整方案，通过AdmissionWebhook[13]修改K8s Node的Allocatable 实现， 达到在使用率较低的情况下，将原本较小的资源扩展为逻辑上较大的资源来处理。例如原有CPU为4核，超卖2倍则是可将这个CPU视作8核
+
+参考实现：
+1. [k8s-admission-webhook-oversale-sample](https://github.com/sydnash/k8s-admission-webhook-oversale-sample/search?q=universalDeserializer)
+2. [oversold](https://github.com/SecondLifter/oversold)
+
+##### scheduler调度
+- extender扩展调度[15]，包含预选和优选接口的webhook，自实现逻辑对节点进行过滤和打分，参与调度流程中各个阶段的决策；
+- 自定义调度器[16]，通过修改pod的spec.schedulerName来选择调度器。比较灵活，但研发成本高。当集群有默认调度器和自定义调度器时，会出现两个调度器争抢；
+- Scheduling Framework[17] Kubernetes v1.19版本stable的可拔插的调度框架，开发者可以通过实现扩展点定义的接口来实现插件 ---推荐
+
+##### Descheduler重调度
+
+上面讲到kube-scheduler默认是静态调度，属于'一次性'调度， 因为 Pod一旦被绑定了节点是不会自动触发重新调度的，那在后续node节点数量、标签、污点、容忍等的变动可能会导致已经被调度过的pod不是最优调度，  官方descheduler[18] 组件补足了这一点。Descheduler可以根据一些规则和配置策略来帮助我们重新平衡集群状态，其核心原理是根据其策略配置找到可以被移除的 Pod 并驱逐它们，其本身并不会进行调度被驱逐的 Pod，而是依靠默认的调度器来实现，目前支持的策略有：
+
+##### 离在线业务混部
+##### Spot抢占实例（应该是竞价实例）
+![131805813559369393a0c19f60ccf40a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5401)
+##### 集群内弹缩
+- HPA
+- KEDA
+- EHPA、AHPA
+crane
+![444ebdb4c2f7cf3ffa34a1f04384439c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5402)
+- HPA接入prometheus-adapter
+![f5972dfd31a91f8f25d02cd3f1460212.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5404)
+HPA接入外部指标
+![eaedd0318f19d3569124df06f84a83d8.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5403)
+- VPA
+缺点：需要重建pod、VPA和HPA同时工作时的冲突问题不好解决
+- Pod超卖：修改pod request/limit
+
+##### 混合云弹性建设
+从弹性的视角来讲私有云平台可以应对常态化业务访问压力，那如果遇到流量剧增，公有云更能提供成熟可靠的秒级弹性伸缩服，因此进行混合云建设可以有效填补业务高低峰访问对资源需求波动较大的业务需求场景，与私有云平台实现优势互补；当然混合云的建设不仅是为弹性，更多是为议价、多活、容灾考虑。
+![fc57f901af1b52b7f65fed47757114ed.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5405)

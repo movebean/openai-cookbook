@@ -1,0 +1,353 @@
+## K8s 组件及高可用
+
+[TOC]
+
+***
+
+### Ref
+
+[Kubernetes|kubernetes components](https://kubernetes.io/docs/concepts/overview/components/)
+
+***
+
+### Base
+
+![eda003ad86a7b73dfaf58d9361ff7c32.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4619)
+
+**二进制：kubelet、kubectl
+static pod：api server、scheduler、controller manager、etcd
+normal：core dns、kubeproxy、CNI**
+
+
+***
+
+### 搭建高可用集群
+
+#### Ref
+
+[kubernetes|Creating Highly Available Clusters with kuberadm](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/)
+- 在 master(s) 前面需要挂一个 HAProxy 或者其他 loadbalancer
+- 基本上是在 worker 节点 join 集群的时候加上一个参数
+``` sh
+sudo kubeadm join 192.168.0.200:6443 --token 9vr73a.a8uxyaju799qwdjv --discovery-token-ca-cert-hash sha256:7c2e69131a36ae2a042a339b33381c6d0d43887e2de83720eff5359e26aec866 --control-plane --certificate-key f8902e114ef118304e561c3ecd4d0b543adc226b7a07f675f56564185ffe0c07
+```
+
+[OpenAI Kubernetes 相关博文读后笔记](https://www.cnblogs.com/east4ming/p/17250294.html)
+- 介绍 OpenAI 在面对超大集群时候的一些思路，不是很系统，就看看
+- 使用本机 SSD，而不是通过网络，包括 etcd、pv、apiserver
+- 切分 etcd
+- 并行拉取镜像、镜像预热
+- ARP 缓存扩大
+``` sh
+net.ipv4.neigh.default.gc_thresh1 = 80000
+net.ipv4.neigh.default.gc_thresh2 = 90000
+net.ipv4.neigh.default.gc_thresh3 = 100000
+```
+- 为了解决 CA 扩容 Node 太慢的问题，使用了 `balloon pod`（有点意思）
+    - balloon pod 独占一个 Node
+    - balloon pod 优先级要低
+    - balloon pod 的意义是，提前预留指定数量（balloon pod 个数）的 Node
+
+#### Base
+
+![45a1c69a41f05d6e868de258f1dbcc6b.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4618)
+
+apiserver、scheduler、etcd、kube controller manager、cloud controller manager 都是 node 级别的 static pod，也就是一个 master node 最多产生一份，也就是这些角色都是需要 multi master 高可用。
+static pod 由 kubelet 保证单机高可用性，而 kubelet 的单机高可用由 systemd 保证
+
+- apiserver:
+    - apiserver 是无状态服务，可以多实例部署，以达到高可用、高并发的目的，思路上可以参考字节开源的 kubegateway 项目（5star）
+    - 可以加一层 list watch 的缓冲层，类似 KubeEdge 的思路，cloudcore edgecore，ack、db、减少 relist
+- scheduler 是多实例选主方式，所以高可用可以通过多实例部署来实现；性能问题有几个思路：
+    - scheduler 自身带队列，所以有一定的缓存、削峰填谷的能力
+    - scheduler 有一个参数控制候选节点的比例
+    - scheduler 有 informer 机制
+    - **scheduler 有三种扩展方式：1）多 scheduler；2）extender；3）scheduler framework；**（参考 [调度](evernote:///view/34874899/s39/3a0e2fcc-1b4d-4299-9dec-97c2d17aa52e/3a0e2fcc-1b4d-4299-9dec-97c2d17aa52e/))
+- etcd 大概有两种方式：1）纵向按照 resource type 切；2）替换 etcd
+    - 纵向切：[蚂蚁大规模 Sigma 集群 Etcd 拆分实践 | 4star](https://mp.weixin.qq.com/s/RP8t1QQIHpNFzw9LEFigvw)
+    - 替换 etcd：[字节跳动高性能 Kubernetes 元信息存储方案探索与实践 | 5star](https://mp.weixin.qq.com/s/lxukeguHP1l0BGKbAa89_Q)
+- controller manager：选主、master 部署、informer 机制、纵向扩容、operator
+    - 另外 AA、operator 也可以一定程度上缓解性能问题
+
+#### 以 etcd 为核心
+
+[集群高可用代理实践分享 | 5star](https://mp.weixin.qq.com/s/ldw-TroDklazh04aiLVwoA)
+- stacked etcd：etcd 和 master 节点在一起
+![2b432c5170f03705176e34c5580fb526.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5228)
+
+- external etcd：etcd 作为独立集群部署
+![8eafdf454e6f903a7a6d8018aef845c3.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5229)
+
+- kube-controller-manager 和 kube-scheduler ：只要部署多 master 实例，即可通过自身选举机制实现高可用。
+- apiserver 本质上是一个无状态的 HTTP API 服务，因此，实现 apiserver 的高可用性，本质上就是实现 web 服务器的高可用性，可以通过为其增加可水平扩容的负载均衡器
+
+- apiserver 的多实例高可用，可以结合 haproxy/nginx + vip/keepalived 的方式解决
+
+- PS：通过 etcdctl 操作集群
+``` sh
+ETCDCTL_API=3 etcdctl --cert /etc/kubernetes/pki/etcd/peer.crt --key /etc/kubernetes/pki/etcd/peer.key --endpoints https://127.0.0.1:2379 --cacert /etc/kubernetes/pki/etcd/ca.crt get /registry/endpoints --prefix --keys-only
+```
+- PS：etcdctl 实践
+由于写了一个 nodeport 6443 service，导致默认的 apiserver 6443 连不上了，整个集群失联，尝试通过 etcd 删除这个 service 成功
+``` sh
+ETCDCTL_API=3 etcdctl --cert /etc/kubernetes/pki/etcd/peer.crt --key /etc/kubernetes/pki/etcd/peer.key --endpoints https://127.0.0.1:2379 --cacert /etc/kubernetes/pki/etcd/ca.crt get /registry/services --prefix --keys-only
+ETCDCTL_API=3 etcdctl --cert /etc/kubernetes/pki/etcd/peer.crt --key /etc/kubernetes/pki/etcd/peer.key --endpoints https://127.0.0.1:2379 --cacert /etc/kubernetes/pki/etcd/ca.crt del /registry/services/specs/setup/kubernetes
+```
+
+#### apiserver 高可用与高并发
+
+[字节跳动 kube-apiserver 高可用方案 KubeGateway | 5star](https://mp.weixin.qq.com/s/sDxkXPmgtCknwtnwvg2EMw)
+[kubegateway | github](https://github.com/kubewharf/kubegateway)
+
+##### kubegateway 流程
+
+![b949f50aed0013b3c4174bc37ec240f4.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5835)
+
+##### 传统四层 LB 的问题
+
+> Load imbalance: since kube-apiserver and client are communicating with each others by the HTTP2 protocol, multiple requests will reuse the same underlying TCP connection and not disconnect for a long time. When a kube-apiserver instance is restarted, it is easy to cause load imbalance. The late startup kube-apiserver instance will have only a small number of requests over a long period of time . In extreme cases, instances with higher loads will OOM and even cause avalanches.
+
+传统四层负载均衡是基于 TCP 链接级别的，而实际上在其上跑的 HTTP2 协议是可以长时间保持，并且做到链接复用的，这样当 apiserver 重启之后，会导致`极度的不均衡`
+
+> Lack of flexibility in request governance: four-layer load balance working at the transport layer, it is only responsible for message delivery, but cannot handle the information of the application layer's HTTP protocol, so it lacks "flexibility" and "intelligence" for request governance compared to seven-layer load balance. It can not develop flexible load balance and routing policies based on the request content, such as verb , url and other fields, nor can set a rate limit on the request level.
+
+`缺乏灵活的控制`（因为读取不到七层信息），比如基于 URL、verb、header
+
+##### 为什么要 apiserver 高可用
+
+apiserver 可用性决定了整个集群的高可用能力
+kube-apiserver 本质上是一个无状态的服务器，为了实现其高可用，开发人员通常会部署多个 kube-apiserver 实例，同时引入外部负载均衡器（以下简称 LB）进行流量代理
+![6588a05b4ba2f336976ede5fe83e47ba.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5519)
+目前 LB 的选型一般为 LVS、云厂商的 SLB 或 nginx、HAProxy 的四层负载均衡方案
+
+四层 LB 会引起另外的问题：
+1. 请求`负载不均衡`：由于 kube-apiserver 和 client 是使用 HTTP2 协议连接，HTTP2 的多个请求都会复用底层的同一个 TCP 连接并且长时间不断开。在 kube-apiserver 滚动升级或者某个实例重启时，很容易引起迟些启动的 kube-apiserver 在长时间内只有很少的请求数。极端情况下，负载较高的实例会出现 OOM，甚至引起雪崩。
+2. 缺乏请求`治理的灵活性`：4 层负载均衡在传输层工作，它只负责消息的传递，但是无法处理应用层的 HTTP 协议的信息，因此相较于 7 层负载缺乏对请求治理的“灵活性”和 “智能性”。比如无法根据请求的内容（比如 verb、url 等字段）制定灵活的负载均衡和路由策略，也无法在网关层对请求级别进行限流降级等处理。
+
+##### 用户认证
+
+- 配置文件写死：基于 x509 客户端证书的认证方式：KubeGateway 通过规则 upstream kube-apiserver 中的 CA 证书，解析出客户端证书中用户和用户组信息；
+- 基于 Bearer Token 的认证方式：KubeGateway 通过给 upstream kube-apiserver 发送 TokenReview 请求，要求 upstream kube-apiserver 对 Bearer Token 进行认证，从而得到对应的用户信息。
+
+##### 请求治理
+
+- 负载均衡
+- 健康检测
+- 限流
+- 降级
+
+##### Impersonate（用户扮演）
+
+KubeGateway 会根据选择出的 kube-apiserver 进行转发。在转发的时候 KubeGateway 通过 impersonate 的机制将用户信息通过 Request Header 传递给 upstream kube-apiserver
+Impersonate 是 kube-apiserver 对外提供的一种机制，它允许一个用户扮演成另外一个用户执行 API 请求。在使用这个机制之前，我们需要在 upstream kube-apiserver 为 KubeGateway 的客户端配置好 Impersonate 的权限，请求的具体流程如下：
+![6cd81cda8690b04a3066af1d68a6d594.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5520)
+
+##### *HTTP2 多路复用*
+
+KubeGateway 默认使用 HTTP2 协议，基于 HTTP2 协议的多路复用能力，单条连接上默认支持 250 个 Stream，即单个连接上支持 250 个并发的请求，使得 upstream 单个 kube-apiserver 的 TCP 连接数可以降低两个数量级
+![a1a863ab609be751e12cb787ec3fad70.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5521)
+
+
+##### 针对 list-watch 加一层缓冲
+
+思路类似 KubeEdge，加了一层 list watch 的缓冲，cloudcore edgecore 层
+- ack 机制
+- 本地 db
+- list 收敛
+- 不会每次都 relist
+
+##### apiservers 之前加一层 cache
+
+[OpenAI将Kubernetes Node规模突破7500](https://blog.csdn.net/M2l0ZgSsVc7r69eFdTj/article/details/115300537?spm=1001.2014.3001.5502)
+- 这篇文章中给出一种思路，由于 apiserver 需要接收大量的 list watch 请求，而自己又会 cache 一些东西，所以可能导致 api server 的内存暴涨，如果在 apiserver 之前加一层 cache，就可以减少 apiserver 的负担，从而降低 apiserver 的内存消耗
+***
+
+### kubelet
+
+cAdvisor 集成进 kubelet 了
+
+![b710244f878fc626f71d2a924c307921.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3648)
+![bd6f78010a3b82a6be2b8b6c6f23e93b.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4563)
+![3ae5df708514f954a16f791798453604.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5603)
+
+
+***
+
+### Garbage Collector Controller
+
+如前面所讲，在 Kubernetes v1.8 之前，依赖对象逻辑删除的实现是在客户端，对于某些资源而言则是在控制器端。有时，客户端会中途失败，导致集群状态混乱，需要手动清理。后来为了解决这个问题，K8s 社区引入并实现了 Garbage Collector Controller（垃圾回收器），用更好用且更简单的方式实现 GC。在 K8s 中，有两大类 GC：
+级联（Cascading）：在级联删除中，所有者被删除，那集群中的从属对象也会被删除。
+孤儿（Orphan）：这种情况下，对所有者的进行删除只会将其从集群中删除，并使所有对象处于“孤儿”状态。
+
+#### 级联删除
+在级联删除（cascading deletion strategy）中，从属对象（dependent object）与所有者对象（owner object）会被一起删除。在级联删除中，又有两种模式：前台（foreground）和后台（background）。
+
+前台级联删除（Foreground Cascading Deletion）：在这种删除策略中，所有者对象的删除将会持续到其所有从属对象都被删除为止。当所有者被删除时，会进入“正在删除”（deletion in progress）状态，此时：
+对象仍然可以通过 REST API 查询到（可通过 kubectl 或 kuboard 查询到）
+对象的 deletionTimestamp 字段被设置
+对象的 metadata.finalizers 包含值 foregroundDeletion
+一旦对象被设置为 “正在删除” 状态，垃圾回收器将删除其从属对象。当垃圾回收器已经删除了所有的“blocking”从属对象（ownerReference.blockOwnerDeletion=true 的对象）以后，将删除所有者对象。
+后台级联删除（Background Cascading Deletion）：这种删除策略会简单很多，它会立即删除所有者的对象，并由垃圾回收器在后台删除其从属对象。这种方式比前台级联删除快的多，因为不用等待时间来删除从属对象。
+
+#### 孤儿删除
+在孤儿删除策略（orphan deletion strategy）中，会直接删除所有者对象，并将从属对象中的 ownerReference 元数据设置为默认值。之后垃圾回收器会确定孤儿对象并将其删除。
+
+#### 垃圾回收器如何工作
+如果对象的 OwnerReferences 元数据中没有任何所有者对象，那么垃圾回收器会删除该对象。垃圾回收器由 Scanner、Garbage Processor 和 Propagator 组成：
+
+Scanner：它会检测 K8s 集群中支持的所有资源，并通过控制循环周期性地检测。它会扫描系统中的所有资源，并将每个对象添加到"脏队列"（dirty queue）中。
+
+Garbage Processor：它由在"脏队列"上工作的 worker 组成。每个 worker 都会从"脏队列"中取出对象，并检查该对象里的 OwnerReference 字段是否为空。如果为空，那就从“脏队列”中取出下一个对象进行处理；如果不为空，它会检测 OwnerReference 字段内的 owner resoure object 是否存在，如果不存在，会请求 API 服务器删除该对象。
+
+Propagator ：用于优化垃圾回收器，它包含以下三个组件：
+1. EventQueue：负责存储 k8s 中资源对象的事件
+2. DAG（有向无环图）：负责存储 k8s 中所有资源对象的 owner-dependent 关系
+3. Worker：从 EventQueue 中取出资源对象的事件，并根据事件的类型会采取操作
+
+在有了 Propagator 的加入之后，我们完全可以仅在 GC 开始运行的时候，让 Scanner 扫描系统中所有的对象，然后将这些信息传递给 Propagator 和“脏队列”。只要 DAG 一建立起来之后，那么 Scanner 其实就没有再工作的必要了。
+总体而言，K8s 中 GC 的实现是非常通用且非常有效，希望这篇文章可以帮助大家更加了解 K8s 中的 GC。
+
+***
+
+### scheduler
+
+[云原生多云应用利器 -- Karmada 调度器](https://mp.weixin.qq.com/s/FQ-NiwYWET7IOKu8iSmQhg)
+- 介绍了 karmada 的调度策略，有点意思（Depulicated、Divided、Aggregated、Static Weight、Dynamic Weight）
+
+[A Deep Dive into Kubernetes Scheduling | TODO](https://granulate.io/a-deep-dive-into-kubernetes-scheduling/)
+
+***
+
+### Aggregated APIServer
+
+[Aggregated APIServer 构建云原生应用最佳实践]( https://mp.weixin.qq.com/s/35TMWeF3jxdIzRxMUIW9-w)
+- 对 APIServer、AA 有概念性的介绍
+- apiserver builder
+
+#### 优势
+
+- 能利用 Kubernetes 原生的认证、授权、准入等机制，有更高的开发效率;
+- 能更好的和 K8s 系统融合，借助 K8s 生态更快的推广自己的产品，方便用户上手;
+- 借助于 K8s 成熟的 API 工具及规范，构建出的 API 接口更加规范整齐;
+- 自由度非常大
+
+![9b768fbb9e66dfed4dff5cfaddbe02b9.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3973)
+
+***
+
+### kube-proxy
+
+#### kube-proxy ref
+[如何化解kubernetes网络的复杂性？](https://mp.weixin.qq.com/s/_uQZlD7MtpqacqyxCZ4m1g)
+
+#### kube-proxy 高可用与性能
+
+- 高可用：由于 kube-proxy 属于数据面的组件，相对来说高可用并不是重点，kube-proxy 的部署方式是 daemonset，所以在可用性上，可以部分`依赖 k8s 对于 workload 的自愈管理`。
+- 性能：为了缓解 kube-proxy 的性能问题，可以考虑 kubeproxy 的实现方式
+    - ipvs > iptables > userspace
+    - EndpointSlice > Endpoint
+    - 使用 ebpf 之类的技术代替 kubeproxy（[参考](https://www.tkng.io/services/clusterip/dataplane/ebpf/#:~:text=eBPF%20has%20emerged%20as%20a,improve%20throughput%20and%20increase%20scale.)）
+    > eBPF has emerged as a new alternative to IPTables and IPVS mechanisms implemented by kube-proxy with the promise to reduce CPU utilization and latency, improve throughput and increase scale. 
+    
+***
+
+### etcd
+
+#### 依然使用 etcd
+
+[蚂蚁大规模 Sigma 集群 Etcd 拆分实践 | 4star](https://mp.weixin.qq.com/s/RP8t1QQIHpNFzw9LEFigvw)
+- `对etcd进行水平拆分`
+> Kube-apiserver 默认是所有的资源数据都存储在一套 etcd 集群中，随着存储规模的增长，etcd 集群会面临性能瓶颈。以资源维度进行 etcd 的数据拆分来提升 Kube-apiserver 访问 etcd 的性能是业内所共识的经验优化思路，本质是降低单 etcd 集群的数据规模，减少单 etcd 集群的访问 QPS。
+- event 资源
+> 因为上述的数据特点，event 的拆分是最为简单的，只需要修改 APIServer 的启动配置，重启 APIServer 即可，不需要做数据迁移，也不需要做老旧数据的清理。整个拆分过程除了 Kube-apiserver 外，不需要任何组件的重启或者修改配置。
+- Lease 资源
+> 因此 Lease 资源拆分虽和 event 相比要复杂一些，但也是比较简单的。多出来的步骤就是在拆分的过程中，需要把老 etcd 中的 Lease 资源数据同步到新的 etcd 集群中，一般我们使用 etcdctl make-mirror 工具同步数据。此时若有组件更新 Lease 对象，请求可能会落在老 etcd，也可能落在新的 etcd 中。落在老 etcd 中的更新会通过 make-mirror 工具同步到新的 etcd 中，因为 Lease 对象较少，整个过程持续时间很短，也不会存在问题。另外还需要迁移拆分完成后，删除老 etcd 中的 Lease 资源数据，以便释放锁占用的空间，虽然空间很小，但也不要浪费。类似 event 资源拆分，整个拆分过程除了 kube-apiserver 外，同样不需要任何组件的重启或者修改配置。
+- Pod 资源
+> 但是重点来了，client 的 watch 请求中参数 watchRV 是从 Client-go 中的 List 响应而来，kube-apiserver 只向 client 推送大于 watchRV 的 event 消息，在拆分过程中 client 的 watchRV 有可能远大于 kube-apiserver 本地的 event 的 resourceVersion， 这就是导致 client 丢失 Pod 更新 event 消息的根本原因。
+> 由上文我们知道 Client-go 的 watchRV 要远大于 kube-apiserver 本地 watch cache 中的 resourceVersion, 可以根据这个特点来实现 kube-apiserver 发送指定错误(TooLargeResourceVersionError)，从而触发 Client-go 的 relist 动作。kube-apiserver 组件无可避免的需要重启，更新配置后可以执行我们改造的逻辑。
+- 迁移数据裁剪
+> 我们可以通过改造 etcd snapshot 工具在 snapshot 的过程中实现我们的数据裁剪。etcd 的存储模型中，是有一个 buckets 的列表的， buckets 是 etcd 一个存储概念，对应到关系数据库中可以认为是一个 table，其中的每个 key 就对应的 table 中的一行。其中最重要的 bucket 是名称为 key 的 bucket， 该 bucket 存储了 K8s 中所有资源对象。而 K8s 的所有资源对象的 key 都是有固定格式的，按照 resource 类别和 namespace 区别，每种 resource 都是有固定的前缀。比如 Pod 数据的前缀就是/registry/Pods/。我们在 snapshot 过程中可以根据这个前缀区分出 Pod 数据，把非 Pod 数据裁减掉。
+- 禁止 pod 数据写入
+    - mutatewebhook 实现，要禁止 pod 以及 pod/status 两种资源
+![d1064477880e2751f3dcb725ce63e29a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4481)
+![76279aa884d09fc2f65078c3c3e41253.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4482)
+![b527d9f17643bdf91c71dc593532423b.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4483)
+![e1422d4abe9dd357ab6897fda8b32239.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4484)
+![b043c7be5568b675ec00047703e6ce87.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4485)
+![2073e8558c7b8e293467007809b740e7.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4486)
+![a487c43d99a7e6164a6a4531baadaade.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4487)
+![797bb6cc740e01b5d09f6f9b688bd27d.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4488)
+![2df67e44c23667661b75c6bfa32820c3.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4489)
+
+#### 某种程度替换 etcd
+
+提供兼容的 API，但是存储层直接替换
+
+##### 以最终一致性代替 etcd 的 CP 系统
+
+[为边缘场景重新构建 Kubernetes | 4star](https://mp.weixin.qq.com/s/1WT6f7NJxfRCdY1EAgSjDw)
+本文强调了 Kubernetes 对 etcd 的依赖关系，以及导致可用性降低和调度延迟的因素。我们观察到 etcd 会成为集群扩展的瓶颈，由于其在大规模下的性能限制，会影响调度延迟和整个系统的可用性。我们的结论支持我们的观察到的现象，即依赖数据存储中的强一致性限制了 Kubernetes 的性能、可用性和可扩展性。为了解决这些问题，我们建议建立一个分散化的、最终一致的、专门针对 Kubernetes 的存储。这种设计还为边缘环境带来了重构 Kubernetes 的机会，从而提高了性能、可用性和可扩展性。这些改进可以降低延迟，支持在边缘进行更大规模的部署，可以为编排平台的未来提供相关信息，以分散的方式来实现可用性和性能。[原文](https://www.cl.cam.ac.uk/~apj39/assets/papers/rearchitecting-kubernetes-for-the-edge.pdf)
+
+##### kubebrain
+PS：类似思路的还有 k3s 的 kine
+
+[字节跳动高性能 Kubernetes 元信息存储方案探索与实践 | 5star](https://mp.weixin.qq.com/s/lxukeguHP1l0BGKbAa89_Q)
+[github](github.com/kubewharf/kubebrain)
+基础设施规模仍在增长，为了应对这种趋势，一般有两种思路：
+- 水平扩展：多集群
+- 垂直扩展：提高单集群限制
+
+当前，etcd 是 APIServer 唯一支持的元信息存储系统，随着单个集群规模的逐渐增大，存储系统的读写吞吐以及总数据量都会不断攀升，etcd 不可避免地会成为整个分布式系统的瓶颈。
+
+APIServer 对于存储系统的要求包括：
+- 版本控制：存储系统需要对 APIServer 暴露数据的版本信息，APIServer 侧依赖于数据的版本生成对应的 ResourceVersion；
+- 写操作：存储系统需要支持 Create/Update/Delete 三种语义的操作，更为重要的是，存储系统需要支持在写入或者删除数据时对数据的版本信息进行 CAS；
+- 读操作：存储系统需要支持指定版本进行快照 List 以此从存储中获取全量的数据，填充 APIServer 中的 WatchCache 或供查询使用，此外也需要支持读取数据的同时获取对应的数据版本信息；
+- 事件监听：存储系统需要支持获取特定版本之后的有序变更，这样 APIServer 通过 List 从元信息存储中获取了全量的数据之后，可以监听快照版本之后的所有变更事件，进而以增量的方式来更新 Watch Cache 以及向其他组件进行变更的分发，进而保证 K8s 各个组件中数据的最终一致性。
+
+etcd 的瓶颈：
+- etcd 的网络接口层限流能力较弱，雪崩时自愈能力差；
+- etcd 所采用的是单 raft group，存在单点瓶颈，单个 raft group 增加节点数只能提高容错能力，并不能提高写性能；
+- etcd 的 ExpensiveRead 容易导致 OOM，如果采用分页读取的话，延迟相对会提高；
+- boltdb 的串行写入，限制了写性能，高负载下写延迟会显著提高；
+- 长期运行容易因为碎片问题导致写性能发生一定劣化，线上集群定期通过 defrag 整理碎片，一方面会比较复杂，另一方面也可能会影响可用性。
+
+KubeBrain
+![345b2e68b0f5b639ed458f6e5ab54884.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5566)
+KubeBrain 系统实现了 APIServer 所使用的元信息存储 API，整体采用主从架构，主节点负责处理写操作和事件分发，从节点负责处理读操作，主节点和从节点之间共享一个分布式强一致 KV 存储，在此基础上进行数据读写。
+- 存储引擎
+![97d19e532a53624a5505281de556f7a7.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5567)
+可以看到，由于没有采用类似raft的方式，而是主从方式，数据可靠性以及一致性完全依赖于低层数据引擎
+
+- 结论及思考
+etcd 底层使用了 boltdb，应该是一种本地存储，所以每个 etcd 实例必须充当一个 raft 参与者，以保证数据的可靠性和一致性；而类似 KubeBrain 的思路，则是只实现 API 层，底层依赖外部 KV 存储，将数据可靠性和一致性的细节交给外部系统实现，`可以快速变换底层实现，不停追求更加高效的存储引擎实现`。
+
+#### 聚合请求
+
+我们知道，informer 是一种共享数据的机制，对于同一个进程内，同一种资源只需要一份 informer 即可，这种机制极大的缓解了 API Server 的压力，那`这种思路的进一步延申可以是一层集群级别的 proxy layer，它可以代理所有 informer 的请求，聚合向 API Server 请求并回应，这样可以在集群维度做到 informer 的效果`。
+
+***
+
+### 敏捷版云原生 paas 场景
+
+[产品解读 | 敏捷版云原生PaaS场景，更丰富的云原生应用治理能力让业务快速生长](https://mp.weixin.qq.com/s/cHGEH5zbGnOd11OnOLdUog)
+看着是一套产品集
+
+#### 核心能力
+1）基于 Java Agent 服务治理：原生的 Spring Cloud 及 Dubbo 应用可以不经修改的获得配置推送、无损下线、离群摘除、标签路由、服务鉴权、链路追踪、金丝雀发布、API 管控、服务测试、限流降级和故障注入等能力。
+
+2）多语言互通：基于 Mesh 产品提供的服务网格功能，CNStack 可以将基于不同语言、不同框架、不同协议的应用统一进行服务治理，将治理能力与业务实现逻辑彻底解耦并下沉到平台，彻底解放了业务研发生产力，且对遗留系统支持友好。
+
+3）可观测性：通过 Prometheus 产品，用户既可以对 CNStack 内的产品本身进行基础性能监控，也可以对客用集群进行监控。同时 ARMS 产品提供了丰富的应用监控数据和大盘功能，是监控系统健康状况的首选功能。最后在多语言场景下，XTrace 基于 OpenTracing 规范，可以提供跨语言的链路追踪能，并天然支持服务网格。
+
+4）平台高可用：在系统架构层面，从设计、开发、测试到部署阶段，都严格保障高可用能力，在个别节点宕机或失去响应的情况下不会影响用户的业务系统，甚至整机房掉电重启后均能自动恢复服务。
+
+![6803a2ebc72aca215ccccd0d31bfa400.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3540)
+
+[产品发布](https://yqh.aliyun.com/live/apsara_stack_new_release)
+
+***
+
+### 开源项目推荐
+
+[开源项目推荐](https://mp.weixin.qq.com/s/-efc6-DHQRZV_xWCr0rZoQ)

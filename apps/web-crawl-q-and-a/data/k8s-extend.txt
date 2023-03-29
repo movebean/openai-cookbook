@@ -1,0 +1,201 @@
+## k8s 的扩展点
+
+[TOC]
+
+***
+
+### Base
+
+![fc91d003f7bd8c6d5f1dffe331c1e3b8.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5634)
+
+[official | k8s extension points | 5star](https://kubernetes.io/docs/concepts/extend-kubernetes/#extension-points)
+
+***
+
+### extended resources
+
+[Advertise Extended Resources for a Node](https://kubernetes.io/docs/tasks/administer-cluster/extended-resource-node/)
+[Assign Extended Resources to a Container](https://kubernetes.io/docs/tasks/configure-pod-container/extended-resource/)
+extended resource 在 scheduler 的判断逻辑在 Fit 插件中
+``` golang
+func fitsRequest(podRequest *preFilterState, nodeInfo *framework.NodeInfo, ignoredExtendedResources, ignoredResourceGroups sets.String) []InsufficientResource {
+	// .............. cpu/mem/podNumber/ephemeralStorage logic
+
+	for rName, rQuant := range podRequest.ScalarResources {
+		// Skip in case request quantity is zero
+		if rQuant == 0 {
+			continue
+		}
+
+		if v1helper.IsExtendedResourceName(rName) {
+			// If this resource is one of the extended resources that should be ignored, we will skip checking it.
+			// rName is guaranteed to have a slash due to API validation.
+			var rNamePrefix string
+			if ignoredResourceGroups.Len() > 0 {
+				rNamePrefix = strings.Split(string(rName), "/")[0]
+			}
+			if ignoredExtendedResources.Has(string(rName)) || ignoredResourceGroups.Has(rNamePrefix) {
+				continue
+			}
+		}
+
+		if rQuant > (nodeInfo.Allocatable.ScalarResources[rName] - nodeInfo.Requested.ScalarResources[rName]) {
+			insufficientResources = append(insufficientResources, InsufficientResource{
+				ResourceName: rName,
+				Reason:       fmt.Sprintf("Insufficient %v", rName),
+				Requested:    podRequest.ScalarResources[rName],
+				Used:         nodeInfo.Requested.ScalarResources[rName],
+				Capacity:     nodeInfo.Allocatable.ScalarResources[rName],
+			})
+		}
+	}
+
+	return insufficientResources
+}
+```
+
+#### 与 device plugin 的结合
+
+[Kubernetes Extended Resource and Device Plugin Modules](https://www.alibabacloud.com/blog/kubernetes-extended-resource-and-device-plugin-modules_593770)
+[Schedule GPUs](https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/)
+
+##### device plugin 基础
+
+When the plugin starts, it registers with Kubelet /var/lib/kubelet/device-plugins/kubelet.sock in GRPC format and provides the plugin listening Unix socket, API version, and device name (for example, nvidia.com/gpu). Kubelet exposes the devices to the Node status and sends them to the API server in an Extended Resource request. The scheduler schedules the devices based on the information. （extended resources）
+
+After the plugin starts, Kubelet establishes a persistent listAndWatch connection to the plugin. When detecting an unhealthy device, the plugin automatically notifies the Kubelet. If the device is idle, Kubelet moves it out of the allocatable list; if the device is used by a pod, Kubelet kills the pod.
+
+The plugin monitors the Kubelet status by using the Kubelet socket. If Kubelet restarts, the plugin also restarts and registers with Kubelet again.
+
+![ed03f2cc057fb28b536417fe1a50a370.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5591)
+
+***
+
+### kubectl plugins
+
+#### demo
+
+- source
+``` sh
+#!/bin/bash
+
+echo "============== Workload info ================"
+workloads=$(kubectl get cloneset -ojson | jq '.items[].metadata.name')
+
+for workload in $workloads
+do
+        echo ''
+        workload=$(echo $workload | tr -d \")
+        kubectl get cloneset $workload
+        kubectl get pod -l tem-service=$workload 2>/dev/null | sed 's/^/   |----(pod)     /g' | tail -n +2
+        kubectl get svc -l tem-service=$workload 2>/dev/null | sed 's/^/   |----(svc)     /g' | tail -n +2
+        kubectl get upgradestrategy $workload  2>/dev/null | sed 's/^/   |----(upgrade) /g' | tail -n +2
+done
+
+if [ X"$1" == X"--control" ]; then
+    echo ''
+    echo ''
+    echo "============== Control panel info ================"
+    kubectl get deployment -A | grep 'kruise\|upgrade'
+    
+    echo ''
+    kubectl get pod -A | grep 'kruise\|upgrade\|coredns'
+    
+    echo ''
+    kubectl get secret | grep tcr
+    
+    echo ''
+    kubectl get cm -n kube-system coredns -oyaml | yq eval '.data' -
+fi
+```
+
+- setup
+chmod +x kubectl-brief
+ln -s \`pwd\`/kubectl-brief /usr/local/bin/kubectl-brief
+
+- test
+``` sh
+# kk brief
+============== Workload info ================
+
+NAME               DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-api   1         1         1               1       1       19d
+   |----(pod)     mist-develop-api-l94xz   1/1     Running   0          7d23h
+   |----(svc)     mist-develop-api-ingress   ClusterIP   10.0.214.82   <none>        80/TCP    19d
+   |----(upgrade) mist-develop-api   mist-develop-api   1            Finish                  Finish
+
+NAME                     DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-functions   1         1         1               1       1       16d
+   |----(pod)     mist-develop-functions-8qkwp   1/1     Running   0          14d
+   |----(svc)     mist-develop-functions-ingress   ClusterIP   10.0.160.159   <none>        80/TCP    16d
+   |----(upgrade) mist-develop-functions   mist-develop-functions   1            Finish                  Finish
+
+NAME                       DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-maintenance   1         1         1               1       1       16d
+   |----(pod)     mist-develop-maintenance-846bq   1/1     Running   0          16d
+   |----(svc)     mist-develop-maintenance-ingress   ClusterIP   10.0.115.206   <none>        80/TCP    16d
+
+NAME                         DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-timmerservice   1         1         1               1       1       15d
+   |----(pod)     mist-develop-timmerservice-8w6l4   1/1     Running   0          13d
+   |----(svc)     mist-develop-timmerservice-ingress   ClusterIP   10.0.72.50   <none>        80/TCP    15d
+   |----(upgrade) mist-develop-timmerservice   mist-develop-timmerservice   1            Finish                  Finish
+
+# kk brief --control
+============== Workload info ================
+
+NAME               DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-api   1         1         1               1       1       19d
+   |----(pod)     mist-develop-api-l94xz   1/1     Running   0          7d23h
+   |----(svc)     mist-develop-api-ingress   ClusterIP   10.0.214.82   <none>        80/TCP    19d
+   |----(upgrade) mist-develop-api   mist-develop-api   1            Finish                  Finish
+
+NAME                     DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-functions   1         1         1               1       1       16d
+   |----(pod)     mist-develop-functions-8qkwp   1/1     Running   0          14d
+   |----(svc)     mist-develop-functions-ingress   ClusterIP   10.0.160.159   <none>        80/TCP    16d
+   |----(upgrade) mist-develop-functions   mist-develop-functions   1            Finish                  Finish
+
+NAME                       DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-maintenance   1         1         1               1       1       16d
+   |----(pod)     mist-develop-maintenance-846bq   1/1     Running   0          16d
+   |----(svc)     mist-develop-maintenance-ingress   ClusterIP   10.0.115.206   <none>        80/TCP    16d
+
+NAME                         DESIRED   UPDATED   UPDATED_READY   READY   TOTAL   AGE
+mist-develop-timmerservice   1         1         1               1       1       15d
+   |----(pod)     mist-develop-timmerservice-8w6l4   1/1     Running   0          13d
+   |----(svc)     mist-develop-timmerservice-ingress   ClusterIP   10.0.72.50   <none>        80/TCP    15d
+   |----(upgrade) mist-develop-timmerservice   mist-develop-timmerservice   1            Finish                  Finish
+
+
+============== Control panel info ================
+kruise-system             kruise-controller-manager             1/1     1            1           19d
+upgrade-strategy-system   upgrade-strategy-controller-manager   1/1     1            1           19d
+
+kruise-system             kruise-controller-manager-7dd55b48c9-t2454             1/1     Running            0          19d
+kube-system               coredns-669c5b899c-2cx66                               1/1     Running            0          19d
+kube-system               coredns-669c5b899c-7j9xl                               1/1     Running            0          19d
+upgrade-strategy-system   upgrade-strategy-controller-manager-6f6b456dff-q4t4k   2/2     Running            0          19d
+
+
+Corefile: |-
+  .:53 {
+      errors
+      health :8081
+      kubernetes cluster.local in-addr.arpa ip6.arpa {
+          pods insecure
+          fallthrough in-addr.arpa ip6.arpa
+          ttl 30
+      }
+      prometheus :9153
+      forward . 183.60.83.19 183.60.82.98
+      hosts {
+          169.254.0.145 tem-jp-custom-registry-prd-01.tencentcloudcr.com
+          fallthrough
+      }
+      cache 30
+      loop
+      reload
+      loadbalance
+  }
+```

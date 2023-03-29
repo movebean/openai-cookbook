@@ -1,0 +1,253 @@
+## ingress/Gateway API
+
+[TOC]
+
+***
+
+### Ref
+
+[k8s 对外服务之ingress](https://blog.csdn.net/yrx420909/article/details/105724292)
+[official | Ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/)
+[official | Ingress Controllers](https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/)
+[【TKE 团队】Nignx Ingress on TKE 部署最佳实践](https://km.woa.com/group/35679/articles/show/434185?kmref=search&from_page=1&no=1)
+[【TKE 团队】手把手教你使用Nignx Ingress 实现简单的金丝雀发布](https://km.woa.com/group/35679/articles/show/442428?kmref=search&from_page=1&no=3)
+[ingress canary annotations](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#canary)
+[k8s服务暴露、ingress-controller、外部访问](https://www.jianshu.com/p/dfce54e4ed66)
+- 《kubernetes in Action中文版》5.4节
+[API 管理在云原生场景下的机遇与挑战](https://mp.weixin.qq.com/s/6ja5ktuR4RIuQYQw_sBTmQ)
+- 讲了很多API网关的厂家/产品，比较全面
+[Kubernetes Ingress（和网络）的Why以及How](https://mp.weixin.qq.com/s/Aw0wRbh-X3TosIS8MT3HaQ)
+- 循序渐进的理论讲解，还是不错的
+[宣布SMI与Gateway API GAMMA倡议的合作](https://mp.weixin.qq.com/s/3MdOtaWObCOQ4psfiBieJA)
+- Gateway API是对ingress的更高层抽象，在ingress的基础之上，增加了4层支持，这与SMI有一定的重叠，甚至都定位为【规范】
+[kubernetes gateway API 升级到 Beta](https://mp.weixin.qq.com/s/znVSZ5lvZ5RiupEzZw2j1A)
+- Gateway API 是以Gateway[1]（网关）资源（代表底层网络网关/代理服务器）为中心的资源集合，通过由许多供应商实现的、具有表现力的、可扩展的和面向角色的接口来实现健壮的 Kubernetes 服务联网，这些接口具有广泛的行业支持。
+- Gateway API 的优势包括（但不限于）对许多常用网络协议（例如 HTTP、TLS、TCP、UDP）的显式支持，以及对 TLS（Transport Layer Security）的紧密集成支持。Gateway 资源特别支持实现将网络网关的生命周期作为 Kubernetes API 来管理。
+- Gateway API 代表 Ingress 功能的超集，支持更高级的概念。与 Ingress 类似，Kubernetes 没有内置 Gateway API 的默认实现。相反，有许多不同的实现可用，在底层技术方面提供了重要的选择，同时提供了一致和可移植的体验。
+![f832b1e233070b27767e1a061ebb4625.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5359)
+[一文读懂云原生网关](https://mp.weixin.qq.com/s/qqvMjd3s0z_1t6A0acNcvQ)
+[云原生2.0网关API标准发展趋势](https://mp.weixin.qq.com/s/T7gaRolxtQULz2qY04Dp4A)
+- 除开南北向，还计划支持东西向，不过目前还没体现
+- 支持自定义扩展
+
+***
+
+### Base
+
+#### quick start
+
+##### k8s对外暴露服务的方式
+NodePort：NodePort方式最大的缺点是会占用很多集群机器的端口；
+LoadBalance：LB方式最大的缺点则是每个service一个LB又有点浪费和麻烦，并且需要k8s之外的支持；
+Ingress：而ingress则只需要一个NodePort或者一个LB就可以满足所有service对外服务的需求
+
+- 原理
+![43a853851b0fa65c42fedd17f8ec9fe7.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5360)
+
+从上图中可以很清晰的看到，实际上请求进来还是被负载均衡器拦截，比如 nginx，然后 Ingress Controller 通过跟 Ingress 交互得知某个域名对应哪个 service，再通过跟 kubernetes API 交互得知 service 地址等信息；综合以后生成配置文件实时写入负载均衡器，然后负载均衡器 reload 该规则便可实现服务发现，即动态映射
+
+
+业界常用的各种反向代理项目，比如 Nginx、HAProxy、Envoy、Traefik 等，都已经为Kubernetes 专门维护了对应的 Ingress Controller
+
+实际上请求进来还是被负载均衡器拦截，比如 nginx，然后 Ingress Controller 通过跟 Ingress 交互得知某个域名对应哪个 service，再通过跟 kubernetes API 交互得知 service 地址等信息；综合以后生成配置文件实时写入负载均衡器，然后负载均衡器 reload 该规则便可实现服务发现，即动态映射
+
+Ingress Controller是将Ingress这种变化生成一段Nginx的配置，然后将这个配置通过Kubernetes API写到Nginx的Pod中，然后reload.（注意：写入 nginx.conf 的不是service的地址，而是service backend 的 pod 的地址，避免在 service 在增加一层负载均衡转发）
+实际上Ingress也是Kubernetes API的标准资源类型之一，它其实就是一组基于DNS名称（host）或URL路径把请求转发到指定的Service资源的规则。
+
+Ingress 控制器不同于Deployment 控制器的是，Ingress控制器不直接运行为kube-controller-manager的一部分，它仅仅是Kubernetes集群的一个附件，类似于CoreDNS，需要在集群上单独部署（因为ingress controller实质上很大一部分工作就是充当nginx的deployment）
+
+#### 使用场景
+
+- 如果你想要使用同一个 IP 暴露多个服务，这些服务都是使用相同的七层协议（典型如 HTTP），你还可以获取各种开箱即用的特性（比如 SSL、认证、路由等等）
+![c4bf26d210cd7c2249698a3dbf52e737.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5361)
+
+- 单独暴露一个服务
+There are existing Kubernetes concepts that allow you to expose a single Service (see alternatives). You can also do this with an Ingress by specifying a default backend with no rules.
+``` yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: test-ingress
+spec:
+  defaultBackend:
+    service:
+      name: test
+      port:
+        number: 80
+```
+
+- 节省暴露的ip（domain）- fanout - 基于path
+[official | Ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/#simple-fanout)
+A fanout configuration routes traffic from a single IP address to more than one Service, based on the HTTP URI being requested. An Ingress allows you to keep the number of load balancers down to a minimum. For example, a setup like:
+![4aa5bef3a07542672c9c670704009432.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5362)
+The Ingress controller provisions an implementation-specific load balancer that satisfies the Ingress, as long as the Services (service1, service2) exist. When it has done so, you can see the address of the load balancer at the Address field.
+``` yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: simple-fanout-example
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - path: /foo
+        pathType: Prefix
+        backend:
+          service:
+            name: service1
+            port:
+              number: 4200
+      - path: /bar
+        pathType: Prefix
+        backend:
+          service:
+            name: service2
+            port:
+              number: 8080
+```
+- 节省暴露的ip（domain）- fanout - 基于host
+Name-based virtual hosts support routing HTTP traffic to multiple host names at the same IP address.
+![f9b1476a540669515b9f1939dc759d0a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5363)
+The following Ingress tells the backing load balancer to route requests based on the Host header.
+``` yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: name-virtual-host-ingress
+spec:
+  rules:
+  - host: foo.bar.com
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: service1
+            port:
+              number: 80
+  - host: bar.foo.com
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: service2
+            port:
+              number: 80
+```
+
+#### ingress的局限性
+
+- Ingress 的配置过于简单，仅支持 HTTP 协议路由；
+- HTTP 路由仅支持 host 和 path 匹配，对于高级路由功能没有通用配置，只能通过 annotation 来实现，比如使用 Nginx Ingress Controller 实现 URL 重定向 ，需要配置 nginx.ingress.kubernetes.io/rewrite-target annotation，已经无法适应可编程路由的需求；
+- 不同命名空间中的服务要绑定到同一个网关中的情况在实际情况下经常出现，而入口网关无法在多个命名空间中共享；
+- 入口网关的创建和管理的职责没有划分界限，导致开发者不仅要配置网关路由，还需要自己创建和管理网关；
+
+***
+
+### ingress的继任者：Gateway API
+
+[Gateway API：Kubernetes 和服务网格入口中网关的未来 | 5star](https://jimmysong.io/blog/why-gateway-api-is-the-future-of-ingress-and-mesh/)
+[Gateway API | official website](https://gateway-api.sigs.k8s.io/)
+[Gateway API正在成为服务网格战争的导火索](https://mp.weixin.qq.com/s/59z4-BVWkIxShZF61yuZKg)
+
+#### Gateway API 诞生的背景
+
+各种 Ingress 控制器往往会使用 metadata.annotations 中的特定注解，来完成对 Ingress 特定行为的控制，完成各自的个性化功能，例如认证、路径变更、黑白名单等，这就让 Ingress 对象变成了一个奇怪的东西：结构化的核心结构，和非结构化的标注结合起来形成各种 Ingress 方言。并且后期还出现了各种 CRD 配置，客观上也让 Ingress 世界更为分裂，这给 Ingress 功能的集中管理类造成了一个较大的困扰。
+
+K8s 官方 SIG-Network 工作组基于实际现状和需求，提出了全新的 Gateway API 来作为 Ingress 的继任者。总体来说，相对于 Ingress，Gateway API 有几个显著特点：`职责分离`，运维、开发等不同的角色都能够再适合的而边界内完成工作；扩展核心能力，并使用`更结构化`的方式进行表达；易于扩展，Gateway API 为各种不同实现的控制器提供了`一致的扩展方法`。
+
+#### Gateway API base
+
+Gateway API 是一个 API 资源的集合 —— GatewayClass、Gateway、HTTPRoute、TCPRoute、ReferenceGrant 等
+
+Gateway API 作为下一代 Kubernetes Ingress API，为 Kubernetes 网关供应商提供一定程度上的 API `规范`，在保证其`可移植性`的前提下`丰富`了入口网关`的功能`，同时通过关注点分离方便不同角度对网关进行管理。
+
+随着Gateway API规范的发展成熟加上网关控制器服务商支持更多规范，用户组织将有望借此摆脱对于特定供应商/平台的高度依赖与知识锁定。
+
+`不仅仅支持7层`
+
+![5693d9865e2faee22143d22e4b373f31.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5553)
+![9db0eea18b0faf4a91032ea46e80c367.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5554)
+目前，Gateway API 仅支持 HTTPRoute，TCPRoute、UDPRoute、TLSRoute 和 GRCPRoute 还在实验阶段。Gateway API 已经得到了大量的网关和服务网格项目的支持
+
+#### Envoy Gateway
+
+Envoy Gateway 项目的真正意义就在于，可以在 `Envoy 之上构建起简化层`，用以满足某些更`简单的使用场景需求`，比如降低在 API Gateway（又称“南北向网关”）场景使用 Envoy 的门槛。
+
+Envoy Gateway 的目标是降低用户采用 Envoy 作为 API 网关的障碍，以吸引更多用户采用 Envoy。它通过入口和 L4/L7 流量路由，表达式、可扩展、面向角色的 API 设计，使其成为供应商建立 API 网关增值产品的基础。
+
+![670b20ce9960ccf49dbacba8a735fde0.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5558)
+
+在用户用上 Envoy Gateway 之后，可能就不需要其他东西了；但也有一种可能是未来用户的需求发生变化，而 Envoy Gateway 无法满足他们更进一步的需求，这时候用户可能需要更复杂的 Envoy 功能集，而整个 Envoy 项目生态系统都将能为他们所用，用户可以回过头去尝试使用原始的 Envoy、去使用更加强大的 XDS API。
+
+#### 一些反面声音
+
+- Ambassador Labs开发者关系负责人Daniel Bryant也在采访中强调，“标准可能是福音，但也可能是种诅咒，具体要取决于基础域/产品到底处在生命周期中的哪个阶段。`标准既可以成为高层次创新的驱动力，也可能给创新工作戴上镣铐`。
+- 目前最大的隐患是Gateway API可能被某个特定项目或企业所把控，导致其利益定位与整体社区的需求出现错位。
+- 最让人担心的是，目前Gateway API的很多贡献者都来自谷歌，同时也参与到Istio项目的开发。所以如果Gateway API把后续发展方向跟Istio绑定了起来，那么它的定位就会跟最终用户的意愿发生偏离。在这种情况下，标准反而成了一种枷锁，会迫使Linkerd这类项目各自开发自己的API。
+
+
+***
+
+### demo
+
+[Set up Ingress on Minikube with the NGINX Ingress Controller](https://kubernetes.io/docs/tasks/access-application-cluster/ingress-minikube/)
+这个需要修改一下ingress，因为版本问题
+``` yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: example-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  rules:
+    - host: hello-world.info
+      http:
+        paths:
+          - path: /
+            backend:
+              serviceName: web
+              servicePort: 8080
+```
+``` yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-myapp 
+  namespace: default   
+  annotations:         
+    kubernetes.io/ingress.class: "nginx"
+spec:   
+  rules: 
+  - host: myapp.magedu.com 
+    http:
+      paths:     
+      - path:     
+        backend:   
+          serviceName: myapp
+          servicePort: 80
+```
+这段yaml的含义是：将对域名 myapp.magedu.com 的访问路由到 k8s service myapp 的80端口上（因为k8s 服务其实可以有多个port，backend对象的定义由2个必要的字段组成：serviceName和servicePort，分别用于指定流量转发的后端目标Service资源名称和端口）
+
+``` yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: my-ingress
+spec:
+  backend:
+    serviceName: my-svc
+    servicePort: 80
+```
+
+注意这个demo中的backend和上一个demo中的backend不同，在这里是default的意思，这个demo表达的是：将service（my-svc：80）暴露成一个ingress，之后ingress controller可能会为这个ingress挂上一个ip地址
+
+
+
+
+

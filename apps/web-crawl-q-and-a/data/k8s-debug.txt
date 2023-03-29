@@ -1,0 +1,898 @@
+## 端云联调
+
+[TOC]
+
+***
+
+### Base
+
+#### port-forward 原理
+
+[Kubernetes Port Forward 机制](https://imkira.com/Kubernetes-Port-Forward/)
+注意 kubectl port-forward 在 1.23 之前有一个bug：[Service port forwarding recovery on restarted pods](https://github.com/kubernetes/kubectl/issues/686)
+
+当向 local-port 建立端口连接，并向该端口发送数据，数据经过以下步骤：
+
+- 数据发往 kubctl 监听的 local-port
+- kubectl 使用事先建立的与 ApiServer:8080 的链接，通过 SPDY 协议将数据发送给 ApiServer
+- ApiServer 使用事先建立的与目标 pod 所在的 node 的 Kubelet 链接，通过 SPDY 协议将数据发送到目标 node
+- 目标 node 的 Kubelet 收到数据后，通过 PIPE（STDIN，STDOUT）与 Socat 通信
+- Socat 将 STDIN 的数据发送给 pod 内部的指定的 container-port，并将返回的数据写入到 STDOUT
+- STDOUT 的数据由 Kubelet 接收并按照相反的路径发送回去
+
+注：SPDY 协议将来可能会被替换为 HTTP/2*
+关于 SPDY，[这里](https://www.likecs.com/show-306083371.html)有一篇简单的介绍
+![59098656ed7805b03071c82d873c8091.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5144)
+![87186d14819322401e5eaa51ea66f0ae.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5880)
+
+[What Actually Happens When You Publish a Container Port | 4star](https://iximiuz.com/en/posts/docker-publish-container-ports/)
+
+##### port-forward demo
+
+[如何对Pod容器进行remote debug](https://mp.weixin.qq.com/s/iiqCHUiHBh8I_ZxxvaYcVg)
+利用 kubectl port-forward + ssh tunnel + language debug mode
+其中 ssh tunnel 不是必须的，只有 1、3 不互通的情况下，需要 ssh tunnel
+还需要注意两点：1. pod 数量调成 1； 2. probe 需要想办法 hack 掉（比如移除或者直接返回 true）
+![472078f2650553bceb0078ec163427ca.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5143)
+
+##### docker engine
+
+iptables/DNAT
+![1dcc184f8a39f5803c4601b97731b97f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5722)
+
+``` sh
+# docker ps -a
+CONTAINER ID   IMAGE                 COMMAND                 CREATED       STATUS       PORTS                                               NAMES
+3ae3056edce8   eci-server:1.0.9      "python3 /app/app.py"   4 days ago    Up 4 days    0.0.0.0:5000->5000/tcp, :::5000->5000/tcp           eci-server
+
+# iptables -t nat -L
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination         
+DOCKER     all  --  anywhere             anywhere             ADDRTYPE match dst-type LOCAL
+
+Chain INPUT (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination         
+DOCKER     all  --  anywhere            !localhost/8          ADDRTYPE match dst-type LOCAL
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination                  
+MASQUERADE  all  --  172.19.0.0/16        anywhere            
+MASQUERADE  tcp  --  172.17.0.2           172.17.0.2           tcp dpt:5000
+
+Chain DOCKER (2 references)
+target     prot opt source               destination         
+RETURN     all  --  anywhere             anywhere            
+DNAT       tcp  --  anywhere             anywhere             tcp dpt:5000 to:172.17.0.2:5000
+```
+
+##### docker desktop
+
+macOS: vpnkit-bridge + iptables/DNAT
+![e61feb5a3e91b9f144619e0d8bae58b0.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5723)
+
+
+##### containerd
+
+None: 换句话说，containerd 是 CRI，它并没有做 CNI 需要做的工作，但是 containerd 确实会做【创建 network namespace】 以及【挂到 bridge】 这种事情
+
+##### nerdctl
+
+cni plugin: portmap
+
+##### lima
+
+ssh tunnel + cni plugin (portmap)
+![d4ee65685393f58d2af8126676542226.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5724)
+
+***
+
+### 手动演练
+
+[如何对Pod内容器进行remote debug（增补篇） | 4star](https://mp.weixin.qq.com/s/iU6H5YtCJ_zgfcNEBxbraA)
+
+***
+
+### tunnel
+
+集群和本地机器之间的反向隧道
+允许您将计算机作为集群中的服务公开，或者将其公开给特定的部署。这个项目的目的是为这个特定的问题提供一个整体的解决方案(从kubernetes pod访问本地机器)。
+
+质量上和玩具差不多
+
+#### tunnel 安装
+
+``` sh
+$ kubectl krew install tunnel
+```
+
+#### tunnel 使用
+
+``` sh
+# term 1
+$ nc -l 8011
+
+# term 2
+$ k tunnel expose myapp 8088:8011
+$ k get deployment
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+myapp   1/1     1            1           92m
+$ k get pod                                             
+NAME                     READY   STATUS    RESTARTS   AGE
+myapp-7f45877986-mm8cm   1/1     Running   0          87m
+nettool                  1/1     Running   12         229d
+$ k get service
+NAME                      TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+myapp                     ClusterIP   10.97.106.234   <none>        8088/TCP   88m
+
+# term 3
+$ k exec -it nettool -- sh
+/ # nc myapp 8088
+asdf
+asdf
+okk
+
+# term 1
+asdf
+asdf
+okk
+```
+
+***
+
+### kubectl debug
+
+#### 工作原理
+
+容器本质上是带有 cgroup 资源限制和 namespace 隔离的一组进程。因此，我们只要启动一个进程，并且让这个进程加入到目标容器的各种 namespace 中，这个进程就能 “进入容器内部”，与容器中的进程 “看到” 相同的根文件系统、虚拟网卡、进程空间了 —— 这也正是 docker exec 和 kubectl exec 等命令的运行方式。
+
+现在的状况是，我们不仅要 “进入容器内部”，还希望带一套工具集进去帮忙排查问题。那么，想要高效管理一套工具集，又要可以跨平台，最好的办法就是把工具本身都打包在一个容器镜像当中。接下来，我们只需要通过这个 “工具镜像” 启动容器，再指定这个容器加入目标容器的的各种 namespace，自然就实现了 “携带一套工具集进入容器内部”。
+![f3d0f06cd8a91a71422b4757263166c3.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5727)
+
+Ivan 大神也通过 docker 的方式，手动按照这个原理实践了一遍 [Docker: How To Debug Distroless And Slim Containers | 4star](https://iximiuz.com/en/posts/docker-debug-slim-containers/)
+- 甚至介绍如何动态安装需要的工具（而不用 Dockerfile 重新打包 image）：nix
+- 也简单介绍了 kubectl debug 的原理
+- 也介绍了如何打破 mnt namespace 限制的 trick
+
+[K8S 故障排错新手段：kubectl debug实战](https://mp.weixin.qq.com/s/G5w4dmsk0jnUn19o0EI5Qg)
+
+#### 实验
+
+首先要保证集群版本足够高，实验采用的是 1.24
+同时也要求 kubectl 版本足够高，一般保持和集群版本一致
+``` sh
+curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.24.0/bin/linux/amd64/kubectl
+```
+否则会报错，比如在 1.20 版本上：
+``` sh
+Defaulting debug container name to debugger-b567k.
+error: error updating ephemeral containers: EphemeralContainers in version "v1" cannot be handled as a Pod: no kind "EphemeralContainers" is registered for version "v1" in scheme "pkg/api/legacyscheme/scheme.go:30"
+```
+
+##### 调试一个没有 shell 的镜像
+``` sh
+# k exec -it foo-app -- sh
+Defaulted container "foo-app" out of: foo-app, debugger-xz6dr (ephem)
+error: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "f4f93255452f2fae65e91ebea4f1a7a423588faee78521c95a9e579d6b359d70": OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH: unknown
+# k exec -it foo-app -- ls
+Defaulted container "foo-app" out of: foo-app, debugger-xz6dr (ephem)
+error: Internal error occurred: error executing command in container: failed to exec in container: failed to start exec "769c1113534c5a3d210c6ea2bcd1e5181648a993d687127c9c6dda3949f46996": OCI runtime exec failed: exec failed: unable to start container process: exec: "ls": executable file not found in $PATH: unknown
+
+# k debug -it foo-app --image=uttne/nettool:1.0.3 --target=foo-app
+Targeting container "foo-app". If you don't see processes from this container it may be because the container runtime doesn't support this feature.
+Defaulting debug container name to debugger-9cm4h.
+If you don't see a command prompt, try pressing enter.
+
+/ # ls
+bin           etc           lib           mnt           proc          product_uuid  run           srv           tmp           var
+dev           home          media         opt           product_name  root          sbin          sys           usr
+/ # ps -ef
+PID   USER     TIME  COMMAND
+    1 root      0:00 /http-echo -text=foo
+   66 root      0:00 /bin/sh
+   78 root      0:00 ps -ef
+```
+
+可以看到，使用 debug 方式的确可以进入目标 pod，再通过 crictl 看看
+![332c80348b32cd1d2707f2dacacadb6d.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5883)
+通过 crictl 的输出，可以确认，debugger 容器的确进入了目标 pod
+***
+
+### nocalhost
+
+***
+
+### kt-connect
+**貌似在 kind 集群上不行**
+#### 安装
+
+``` sh
+$ curl -OL https://github.com/alibaba/kt-connect/releases/download/v0.3.7/ktctl_0.3.7_Linux_x86_64.tar.gz
+$ tar -zxvf ktctl_0.3.7_Linux_x86_64.tar.gz
+$ mv ktctl /usr/local/bin/
+```
+
+#### 原理
+见下文 【为什么在 Kubernetes 中调试应用的体验如此糟糕？】小节
+
+[技术原理](https://alibaba.github.io/kt-connect/#/zh-cn/reference/mechanism)
+[聊聊k8s调试工具kt-connect的实现](https://cdn.modb.pro/db/449021)
+[云原生开发之本地电脑居然可以直接访问k8s中所有的容器?](https://mp.weixin.qq.com/s/fZeLkBWH0BfnoA2dBRD9uw)
+[K8s 环境下研发如何本地调试？kt-connect 使用详解](https://mp.weixin.qq.com/s/R1SbAY42tNTpnmFdesxiIw)
+
+各种模式的通行原理：
+- 都是通过 port forward 来打通 local 到 k8s 的物理链路
+- 都是通过 ssh 做的流量代理
+- 都是通过 iptables + dns 做的 local 到 k8s 的流量劫持
+
+##### connect 模式原理
+
+connect 模式提供 local 到 k8s 集群的“正向”流量转发
+
+- Tun2Socks 模式
+    - 首先在集群中创建一个 `Shadow Pod，提供 SSH 和 DNS 服务`，然后`利用 PortForward 将 Shadow Pod 的 SSH 端口映射到本地并创建通往 Shadow Pod 的 Socks5 协议代理服务，监听本地 2223 端口`
+    - 接着在`本地创建一个 tun 设备`（可以简单理解为一个临时的虚拟网卡），将发往该设备的`数据通过 Socks5 协议发送给 Shadow Pod`，由 Shadow Pod 代理访问集群里的其他服务
+    - 最后`配置本地路由表`，并`修改本地 DNS 配置`，`将访问`属于集群 IP 段的请求`路由到`上一步创建的 `tun 设备`，同时使用 KtConnect 提供的临时 DNS 服务来解析本地服务发起 DNS 查询
+    - 当 ktctl connect 命令退出时，将自动销毁 Shadow Pod 和本地 tun 设备，并恢复本地路由和 DNS 配置
+ ![ea43a931b5545667480eef45ce2c72a1.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5748)
+- sshuttle 模式
+    - 首先在集群中创建一个 `Shadow Pod，提供 SSH 和 DNS 服务`，然后`利用 PortForward 将 Shadow Pod 的 SSH 端口映射到本地，监听本地 2222 端口`
+    - 不创建本地 tun 设备和 Socks5 代理服务，而是利用一个 Sshuttle 脚本直接将本地请求通过 SSH 协议发送给运行在 Shadow Pod 上的接收脚本，通过后者代理访问集群里的服务
+    - 由于没有 tun 设备可作为路由表目标，Sshuttle 模式利用 iptables/ipfwadm/nftables 工具（Linux 系统）或 pfctl 工具（MacOS 系统）来实现让目的地址是集群资源 IP 的请求发往代理服务
+![321594c298713170952202b269ef9c4c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5749)
+
+##### Exchange 模式原理
+
+提供 “双向” 流量转发
+
+- 首先在集群中创建一个 `Shadow Pod，提供 SSH 和 DNS 服务`，然后`利用 PortForward 将 Shadow Pod 的 SSH 端口映射到本地，监听本地2226端口`
+- 本地通过 SSH 远程转发方式，映射一对端口
+- 修改目标 Service 的 selector （Selector 模式）或者将目标 deployment replicas 改成 0（Scale 模式），做到截取 k8s 内的流量到 Shadow Pod
+![c3ae86a8f26e2100e3e0c87c7b6b6aea.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5750)
+（去到集群的流量走 port forward 2226，从集群来的流量走 ssh -R 3000）
+
+##### mesh 模式原理
+
+mesh 模式和 exchange 模式原理差不多，最大区别在于，exchange 会完全替换原有的应用实例。mesh 命令创建代理容器，但是会保留原应用容器，代理容器会动态生成 version 标签，以便用于可以通过 Istio 流量规则将特定的流量转发到本地，同时保证环境正常链路始终可用。在这种场景下，在确保开发测试环境稳定的同时，基于 Istio 的流量规则，我们可以把部分流量转到本地，从而实现在共享的开发测试环境中的联调能力。
+
+![3759a6a1be2807c9d31c857ff4335e57.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5753)
+
+#### 实验
+
+##### connect 模式
+
+``` sh
+$ ktctl connect --namespace default --debug
+$ k get pod
+NAME                      READY   STATUS    RESTARTS   AGE
+bar-app                   1/1     Running   0          29m
+foo-app                   1/1     Running   0          29m
+kt-connect-shadow-scita   1/1     Running   0          26m
+$ cat /etc/hosts
+127.0.0.1        localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1              localhost localhost.localdomain localhost6 localhost6.localdomain6
+192.168.25.136   k8s-1
+192.168.25.137   k8s-2
+192.168.2.36     local-registry
+1.15.178.201     public-service.qyang.io
+
+127.0.0.1	host.minikube.internal
+192.168.180.129	control-plane.minikube.internal
+
+# Kt Hosts Begin
+10.104.230.126 bar-service
+10.108.105.248 foo-service
+10.96.0.1 kubernetes
+# Kt Hosts End
+
+$ cat /etc/resolv.conf
+# Generated by NetworkManager
+search ctc localdomain
+#nameserver 192.168.2.1 # Removed by KtConnect
+#nameserver 192.168.74.1 # Removed by KtConnect
+nameserver 127.0.0.1 # Added by KtConnect
+
+$ route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+default         gateway         0.0.0.0         UG    100    0        0 ens33
+10.96.0.0       0.0.0.0         255.255.255.0   U     0      0        0 kt0
+bar-service     0.0.0.0         255.255.255.255 UH    0      0        0 kt0
+foo-service     0.0.0.0         255.255.255.255 UH    0      0        0 kt0
+10.244.0.0      0.0.0.0         255.255.255.0   U     0      0        0 kt0
+
+$ ip tuntap
+kt0: tun
+
+$ netstat -anp | grep LISTEN | grep kt
+tcp        0      0 127.0.0.1:30199         0.0.0.0:*               LISTEN      676986/ktctl        
+tcp        0      0 127.0.0.1:49466         0.0.0.0:*               LISTEN      676986/ktctl        
+tcp        0      0 127.0.0.1:2223          0.0.0.0:*               LISTEN      676986/ktctl
+
+$ curl http://foo-service:5678
+bar
+```
+
+PS: 假设 client 和 minikube 主机是同一台，做 dns 测试的时候会有问题，因为 ktctl 会修改 client 主机的各种网络设置，可能导致了 docker 运行的 minikube 也有点问题。
+
+##### exchange 模式
+
+- manifest
+``` yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  labels:
+    run: nettool
+  name: nettool
+spec:
+  containers:
+  - args:
+    - sh
+    - -c
+    - sleep infinitly
+    image: uttne/nettool:1.0.3
+    name: nettool
+    resources: {}
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+status: {}
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: nettool-service
+spec:
+  type: ClusterIP
+  selector:
+    run: nettool
+  ports:
+  # Default port used by the image
+  - port: 5678
+```
+
+- 运行 ktctl exchange
+``` sh
+$ ktctl exchange nettool-service --namespace default --expose 5678 --debug
+```
+
+- 本地运行调试客户端（以 nc 做演示）
+``` sh
+$ nc -l 5678
+hello  (recv)
+world (send)
+```
+
+- 在集群内请求 nettool-service 的服务
+``` sh
+$ k exec -it nettool -- sh
+/ nc nettool-service 5678
+hello  (send)
+world  (recv)
+```
+
+**`PS: 注意 exchange 模式下，/etc/hosts 以及 /etc/resolv.conf 均不会被修改，只会在集群中部署一个 exchange pod，并修改 service endpoints`**
+![b791381fd5f798539733127a57a5cf88.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5884)
+
+***
+
+### kubefwd
+
+看上去是个单向的代理
+> If you need to run a service locally for debugging and your service needs to access other services on k8s, kubefwd is enough. It manages DNS entries in your local machine and opens a one-way tunnel from your machine to cluster for the dependencies of your service.
+[Debugging k8s services: 3 tools for 3 scenarios](https://erkanerol.github.io/post/debugging-k8s-services/)
+
+#### 安装
+
+- mac
+
+```sh
+brew install txn2/tap/kubefwd
+```
+
+- centos
+
+```sh
+yum install -y socat
+wget https://github.com/txn2/kubefwd/releases/download/1.19.0/kubefwd_Linux_x86_64.tar.gz
+```
+
+#### 使用
+
+```sh
+kubefwd svc
+```
+
+```sh
+$ curl http://web:8080
+> Hello, world!
+> Version: 1.0.0
+> Hostname: web-64d69486fc-w7kld
+```
+
+#### 原理
+
+大体思路应该和 kubectl port-forward 是一样的，稍微有区别的是：
+- 将 kubernetes 集群里面的 service 写到了本地 /etc/hosts 里面
+- kubefwd 会在本机上绑定指定 ip（每个 service 一个）并监听
+``` sh
+$ cat /etc/hosts |grep service-middle
+127.1.27.1       service-middle.default service-middle.default.svc service-middle.default.svc.cluster.local service-middle.default.minikube service-middle.default.svc.minikube service-middle.default.svc.cluster.minikube service-middle service-middle.service-debug service-middle.service-debug.svc service-middle.service-debug.svc.cluster.local service-middle.service-debug.minikube service-middle.service-debug.svc.minikube service-middle.service-debug.svc.cluster.minikube
+```
+![70e4b66021772f2778c5504dc7f54797.jpeg](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5881)
+
+每个 service 会在 /etc/hosts 里面占用一条，比如有两个 service
+``` sh
+$ k get service
+NAME          TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+bar-service   ClusterIP   10.96.65.42    <none>        5678/TCP   115s
+foo-service   ClusterIP   10.96.219.16   <none>        5678/TCP   115s
+kubernetes    ClusterIP   10.96.0.1      <none>        443/TCP    32m
+
+$ cat /etc/hosts
+127.1.27.1       foo-service foo-service.default foo-service.default.svc foo-service.default.svc.cluster.local foo-service.default.kind-kind foo-service.default.svc.kind-kind foo-service.default.svc.cluster.kind-kind
+127.1.27.2       bar-service bar-service.default bar-service.default.svc bar-service.default.svc.cluster.local bar-service.default.kind-kind bar-service.default.svc.kind-kind bar-service.default.svc.cluster.kind-kind
+
+$ netstat -anp | grep "127.1.*LISTEN"
+tcp        0      0 127.1.27.1:5678         0.0.0.0:*               LISTEN      832860/kubefwd      
+tcp        0      0 127.1.27.2:5678         0.0.0.0:*               LISTEN      832860/kubefwd
+```
+
+***
+
+### telepresence
+
+[Debugging k8s services: 3 tools for 3 scenarios](https://erkanerol.github.io/post/debugging-k8s-services/)
+![4637a2eb16f5d4ad3884bd62fcc5c080.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5882)
+#### 原理
+
+见下文 【为什么在 Kubernetes 中调试应用的体验如此糟糕？】小节
+
+#### 实验
+
+TODO: [How To Use Telepresence on Kubernetes for Rapid Development on Ubuntu 20.04](https://www.digitalocean.com/community/tutorials/how-to-use-telepresence-on-kubernetes-for-rapid-development-on-ubuntu-20-04)
+
+#### telepresence TUN & root daemon
+
+[Implementing Telepresence Networking with a TUN Device | 4star](https://blog.getambassador.io/implementing-telepresence-networking-with-a-tun-device-a23a786d51e9)
+![123add6ac7162ccf5e8a799ae6d413f4.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5924)
+
+图中画出的 payload 代表从进程应用层看收到/发送的报文内容，比如对于 Daemon 进程 (root daemon)，从 TUN 设备收到的内容包括 TCP header 以及 IP header，这样才能区分是什么应用程序发送来的，以及是目的地是哪里，Daemon 进程需要这些信息以进行下一步转发。
+但是 Daemon 进程并不能原封不动的将这些内容发往 Traffic Manager，因为如果这么做，Traffic Manager 必然也需要将 3/4 层信息解开，并在应用层实现协议栈，以操作报文的准确发送。总之，应用层协议栈的实现要么在 Daemon 实现，要么在 Traffic Manager 实现。注意 TUN 设备在 telepresence 的这个行为和它在 flannel udp 模式的行为不一样，在 flannel 中，flannel.0 只需要原封不动的转发就行了，因为对端 flannel.0 需要的正是带 3/4 层完整信息的报文，并将完整报文发往 bridge，bridge 才能正确转发给正确的 container。
+
+##### daemon 实现的逻辑
+
+daemon 实现了应用层协议栈
+- 如果是一个 TCP 的 新建连接报文，则开启一个新的到 TrafficMgr 的 grpc 链接，并维护对应的 TCP 状态机
+- 如果是一个普通的报文，使用已经建立的 grpc 链接，维护每个报文的序列号信息，甚至包括每个报文对应的 ack 状态。
+
+对应的 Traffic Manager 对于新建连接报文，会向对应 svc 建立 TCP 链接
+
+***
+
+### kubectl-sniff
+[如何在 Kubernetes Pod 内进行网络抓包](https://mp.weixin.qq.com/s/RXUmE1ljv6SsM_oc3AslqA)
+```sh
+brew install --cask wireshark
+kubectl krew install sniff
+```
+
+#### sniff 原理
+
+**貌似在 kind 集群上不行**
+
+ksniff 默认通过上传 tcpdump 二进制文件到目标 Pod 的一个容器里，然后执行二进制来实现抓包。但该方式依赖容器是以 root 用户启动的，如果不是就无法抓包。
+
+这个时候我们可以加一个 -p 参数，表示会在 Pod 所在节点新起一个 privileged 的 Pod，然后该 Pod 会调用容器运行时 (dockerd 或 containerd 等)，新起一个以 root 身份启动的 container，并 attach 到目标 Pod 的 netns，然后执行 container 中的 tcpdump 二进制来实现抓包。
+
+#### sniff 使用
+
+```sh
+$ k sniff go-demo-kv6cg 
+INFO[0000] using tcpdump path at: '/Users/qi.yang/.krew/store/sniff/v1.6.2/static-tcpdump' 
+INFO[0000] no container specified, taking first container we found in pod. 
+INFO[0000] selected container: 'go-demo'                
+INFO[0000] sniffing method: upload static tcpdump       
+INFO[0000] sniffing on pod: 'go-demo-kv6cg' [namespace: 'default', container: 'go-demo', filter: '', interface: 'any'] 
+INFO[0000] uploading static tcpdump binary from: '/Users/qi.yang/.krew/store/sniff/v1.6.2/static-tcpdump' to: '/tmp/static-tcpdump' 
+INFO[0000] uploading file: '/Users/qi.yang/.krew/store/sniff/v1.6.2/static-tcpdump' to '/tmp/static-tcpdump' on container: 'go-demo' 
+INFO[0000] executing command: '[/bin/sh -c test -f /tmp/static-tcpdump]' on container: 'go-demo', pod: 'go-demo-kv6cg', namespace: 'default' 
+INFO[0000] command: '[/bin/sh -c test -f /tmp/static-tcpdump]' executing successfully exitCode: '0', stdErr :'' 
+INFO[0000] file found: ''                               
+INFO[0000] file was already found on remote pod         
+INFO[0000] tcpdump uploaded successfully                
+INFO[0000] spawning wireshark!                          
+INFO[0000] start sniffing on remote container           
+INFO[0000] executing command: '[/tmp/static-tcpdump -i any -U -w - ]' on container: 'go-demo', pod: 'go-demo-kv6cg', namespace: 'default' 
+INFO[0054] starting sniffer cleanup                     
+INFO[0054] sniffer cleanup completed successfully
+```
+
+- -f 指定 tcpdump 参数
+```sh
+k sniff go-demo-kv6cg -f 'src 172.17.0.14'
+INFO[0000] using tcpdump path at: '/Users/qi.yang/.krew/store/sniff/v1.6.2/static-tcpdump' 
+INFO[0000] no container specified, taking first container we found in pod. 
+INFO[0000] selected container: 'go-demo'                
+INFO[0000] sniffing method: upload static tcpdump       
+INFO[0000] sniffing on pod: 'go-demo-kv6cg' [namespace: 'default', container: 'go-demo', filter: 'src 172.17.0.14', interface: 'any'] 
+INFO[0000] uploading static tcpdump binary from: '/Users/qi.yang/.krew/store/sniff/v1.6.2/static-tcpdump' to: '/tmp/static-tcpdump' 
+INFO[0000] uploading file: '/Users/qi.yang/.krew/store/sniff/v1.6.2/static-tcpdump' to '/tmp/static-tcpdump' on container: 'go-demo' 
+INFO[0000] executing command: '[/bin/sh -c test -f /tmp/static-tcpdump]' on container: 'go-demo', pod: 'go-demo-kv6cg', namespace: 'default' 
+INFO[0000] command: '[/bin/sh -c test -f /tmp/static-tcpdump]' executing successfully exitCode: '0', stdErr :'' 
+INFO[0000] file found: ''                               
+INFO[0000] file was already found on remote pod         
+INFO[0000] tcpdump uploaded successfully                
+INFO[0000] spawning wireshark!                          
+INFO[0000] start sniffing on remote container           
+INFO[0000] executing command: '[/tmp/static-tcpdump -i any -U -w - src 172.17.0.14]' on container: 'go-demo', pod: 'go-demo-kv6cg', namespace: 'default'
+```
+
+#### 实验
+
+minikube 环境下
+
+``` sh
+$ k sniff nettool
+INFO[0000] using tcpdump path at: '/usr/local/bin/static-tcpdump' 
+INFO[0000] no container specified, taking first container we found in pod. 
+INFO[0000] selected container: 'nettool'                
+INFO[0000] sniffing method: upload static tcpdump       
+INFO[0000] sniffing on pod: 'nettool' [namespace: 'default', container: 'nettool', filter: '', interface: 'any'] 
+INFO[0000] uploading static tcpdump binary from: '/usr/local/bin/static-tcpdump' to: '/tmp/static-tcpdump' 
+INFO[0000] uploading file: '/usr/local/bin/static-tcpdump' to '/tmp/static-tcpdump' on container: 'nettool' 
+INFO[0000] executing command: '[/bin/sh -c test -f /tmp/static-tcpdump]' on container: 'nettool', pod: 'nettool', namespace: 'default' 
+INFO[0000] command: '[/bin/sh -c test -f /tmp/static-tcpdump]' executing successfully exitCode: '1', stdErr :'' 
+INFO[0000] file not found on: '/tmp/static-tcpdump', starting to upload 
+INFO[0000] verifying file uploaded successfully         
+INFO[0000] executing command: '[/bin/sh -c test -f /tmp/static-tcpdump]' on container: 'nettool', pod: 'nettool', namespace: 'default' 
+INFO[0000] command: '[/bin/sh -c test -f /tmp/static-tcpdump]' executing successfully exitCode: '0', stdErr :'' 
+INFO[0000] file found: ''                               
+INFO[0000] file uploaded successfully                   
+INFO[0000] tcpdump uploaded successfully                
+INFO[0000] spawning wireshark!                          
+INFO[0000] start sniffing on remote container           
+INFO[0000] executing command: '[/tmp/static-tcpdump -i any -U -w - ]' on container: 'nettool', pod: 'nettool', namespace: 'default'
+```
+
+在另外一个 terminal 下
+``` sh
+$ k exec -it nettool -- sh
+/ curl http://foo-service:5678
+bar
+```
+
+- http request
+![78d78aefc1bc4b59d452a8de3a703d00.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5885)
+- http response
+![49e66da07876e111f065be6039b75d35.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5886)
+
+
+
+***
+
+### socat
+
+[多功能网络工具：Socat入门教程](https://ywnz.com/linuxjc/1875.html)
+这里关于 socat 有必要单开一个小标题，实在是太有意思的工具了
+
+#### socat demo
+
+socat 的两个参数没有输入和输出的明显划分，这两个参数都是 bi-addr
+```sh
+Usage:
+socat [options] <bi-address> <bi-address>
+```
+阐明这个含义的一个例子是，以下两个例子效果都是 cat ./test
+```sh
+$ socat ./test -
+$ socat - ./test
+```
+
+##### 写入文件
+``` sh
+$ echo 'hello' | socat - ./test
+$ cat ./test
+hello
+$ echo 'hello2' | socat ./test -
+hello
+$ cat ./test
+hello
+hello2
+```
+
+##### 转发 TCP
+
+监听 192.168.1.252 网卡的 15672 端口，并将请求转发至 172.17.0.15 的 15672 端口。
+```sh
+$ socat  -d -d -lf /var/log/socat.log TCP4-LISTEN:15672,bind=192.168.1.252,reuseaddr,fork TCP4:172.17.0.15:15672
+```
+参数说明：
+
+1. -d -d  前面两个连续的 -d -d 代表调试信息的输出级别。
+2. -lf /var/log/socat.log 指定输出信息的文件保存位置。
+3. TCP4-LISTEN:15672 在本地建立一个 TCP IPv4 协议的监听端口，也就是转发端口。这里是 15672，请根据实际情况改成你自己需要转发的端口。
+4. bind 指定监听绑定的 IP 地址，不绑定的话将监听服务器上可用的全部 IP。
+5. reuseaddr 绑定一个本地端口。
+6. fork TCP4:172.17.0.15:15672 指的是要转发到的服务器 IP 和端口，这里是 172.17.0.15 的 15672 端口。
+
+[这里](https://iximiuz.com/en/posts/docker-publish-port-of-running-container/)有一个 Ivan 大神的 usecase，对于 docker 中那些忘记 publish port 的容器，通过使用 socat 容器转发请求，而不必一定要重新 docker run 原始容器（因为可能比较慢）
+
+##### 转发 UDP
+
+转发 UDP 和 TCP 类似，只要把 TCP4 改成 UDP4 就行了。
+``` sh
+$ socat -d -d -lf /var/log/socat.log UDP4-LISTEN:123,bind=192.168.1.252,reuseaddr,fork UDP4:172.17.0.15:123
+```
+
+##### 文件传送
+
+将文件 demo.tar.gz 使用 2000 端口从 192.168.1.252 传到 192.168.1.253,文件传输完毕后会自动退出。
+在 192.168.1.252 上执行
+```sh
+$ socat -u open:demo.tar.gz tcp-listen:2000,reuseaddr
+```
+在 192.168.1.253 上执行
+```sh
+$ socat -u tcp:192.168.1.252:2000 open:demo.tar.gz,create
+```
+-u 表示数据传输模式为单向，从左面参数到右面参数。
+-U 表示数据传输模式为单向，从右面参数到左面参数。
+
+##### `建立一个正向 Shell`
+
+1. 服务端
+在服务端 7005 端口建立一个 Shell。
+``` sh
+$ socat TCP-LISTEN:7005,fork,reuseaddr EXEC:/bin/bash,pty,stderr
+```
+或者
+``` sh
+$ socat TCP-LISTEN:7005,fork,reuseaddr system:bash,pty,stderr
+```
+2.客户端
+连接到服务器的 7005 端口，即可获得一个 Shell。readline 是 GNU 的命令行编辑器，具有历史功能。
+``` sh
+$ socat readline tcp:127.0.0.1:7005
+```
+
+##### `反弹一个交互式的 Shell`
+
+当有主机连接服务端的 7005 端口时，将会发送客户端的 Shell 给服务端。
+1.服务端
+``` sh
+$ socat -,raw,echo=0 tcp-listen:7005
+```
+2.客户端
+``` sh
+$ socat tcp-connect:127.0.0.1:7005 exec:'sh -li',pty,stderr,setsid,sigint,sane
+```
+
+##### fork 服务
+将一个使用标准输入输出的单进程程序变为一个使用 fork 方法的多进程服务，非常方便，上面`建立一个正向 Shell`就是一个很好的例子。
+``` sh
+$ socat TCP-LISTEN:1234,reuseaddr,fork EXEC:./helloworld
+```
+
+##### container 内部操作 host shell
+- host主机
+``` sh
+socat TCP-LISTEN:7005,fork,reuseaddr EXEC:"/bin/bash",pty,stderr
+```
+或者更安全一点使用login
+``` sh
+socat TCP-LISTEN:23,reuseaddr,fork,crlf exec:/usr/bin/login,pty,setsid,setpgid,stderr,ctty
+```
+
+- container 内部
+``` sh
+socat readline tcp:${HOST}:7005
+#or
+nc ${HOST} 7005
+```
+
+##### host 与 pod 传输文件
+
+思路主要是通过 kubectl port-forward 作为四层代理，后续就和普通的 socat/nc 传输文件方式一样了
+- pod
+``` sh
+$ socat -u tcp-listen:2000 open:demo.tar,create
+```
+- kubectl client
+``` sh
+$ k port-forward pod/nettool 2000:2000
+```
+- host
+``` sh
+$ cat demo.tar | nc 127.0.0.1 2000
+```
+
+##### 封装以及解封装 ssl
+**注意这里很明显有一趟 NAT 过程**
+![0bceb6bcd3257c9c88830e9bdf28016b.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5157)
+
+- client
+``` sh
+$ nohup socat -v tcp-l:9001,reuseaddr,fork ssl:tcpbin.com:4243,verify=0 &
+$ nc 127.0.0.1 9001
+hello
+hello
+```
+
+- local 内部明文
+``` sh
+$ sudo tcpdump -X -i lo0 port 9001
+```
+![c34067c598038329370817ee74f58988.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5158)
+
+- 出口ssl封装
+``` sh
+$ sudo tcpdump -X -i en0 port 4243
+```
+![f62907f3a50821b039af99dc66117b95.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5159)
+
+##### 本地 ssl 双向通信、封装以及解封装 ssl
+
+![14ab85eac850ce760c7f04e794ba8db2.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5161)
+
+
+``` sh
+$ nc -l 9003
+hello
+world
+```
+
+``` sh
+$ socat -v tcp-l:9001,reuseaddr,fork ssl:127.0.0.1:9002,verify=0
+> 2022/05/05 14:59:25.396961  length=6 from=0 to=5
+hello
+< 2022/05/05 14:59:30.288131  length=6 from=0 to=5
+world
+```
+
+``` sh
+$ socat -v openssl-listen:9002,verify=0,reuseaddr,fork,cert=./server.pem tcp4:127.0.0.1:9003
+> 2022/05/05 14:59:25.397600  length=6 from=0 to=5
+hello
+< 2022/05/05 14:59:30.287681  length=6 from=0 to=5
+world
+```
+
+``` sh
+$ nc 127.0.0.1 9001
+hello
+world
+```
+
+#### 案例
+
+##### eci public-server 做反向代理
+通过 socat 做反向代理，类似 nignx，部署在 eci public-svc 的 sshd container 上，比如代理另一个 eci gitlab 实例
+
+最终的命令大概长这样：
+``` sh
+ssh -p 22 -i ~/.ssh/id_rsa_devcloud root@public-svc.qiyang.tech 'nohup sh /proxy.sh 10.1.186.207 4000 1>/dev/null 2>&1 &'
+```
+
+***
+
+### 为什么在 Kubernetes 中调试应用的体验如此糟糕？
+
+[为什么在 Kubernetes 中调试应用的体验如此糟糕？ | 5star](https://mp.weixin.qq.com/s/maI6Nu6r431LtGzrgq_6rg)
+
+这篇文章深入的讲解了 kubectl port-forward、kubefwd、telepresence、kt-connect、nocalhost 几个工具的原理以及使用 demo
+
+#### kubernetes port forwarding
+
+适合非常简单的服务架构，比如只有两个服务：Service A -> Service B，如果想调试服务 A，但是服务 A 依赖于服务 B，则可以将服务 B 的 port 映射到本地端口
+![f9943f3956ddb6e10a7db1435fee3c49.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5906)
+
+##### 缺点
+
+port-forward 其实适合只有少量 dependencies 的服务来使用，它对于复杂架构有以下几个不足点
+1. 开发者需要明确清楚依赖的目标服务，需要对平台架构有一定的了解
+2. 开发者需要清楚目标服务在 K8s 集群內的 Service Name 以及端口号
+3. 如果依赖的服务增多，每个服务都要手动或维护脚本做端口转发
+4. 本地配置和部署配置不一致，做不到无缝调试（本地使用 localhost，线上使用 svc）
+
+#### kubefwd
+
+可以解决多个依赖服务、通过服务名访问依赖服务
+
+![184484e64b941ddb6204636d6e865c02.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5907)
+
+``` sh
+# 一条指令转发 2 个 namespace 下全部的服务
+sudo -E kubefwd svc -n foo -n bar
+
+# 又或者按需指定 svc 的标签来转发
+sudo -E kubefwd svc -n foo -n bar \        -l "app in (
+                service-c, \
+                service-d, \
+                service-e, \
+                service-f,
+                )"
+```
+
+##### 缺点
+
+1. 单向访问
+![66589d4f82589149fa5880c301908deb.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5908)
+
+#### telepresence
+
+##### 架构
+
+![c7f1c7f35a4c3d5473708988b6d8271a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5909)
+
+- traffic manager
+我们本地要和目标集群做通信，首先需要安装这玩意。用 telepresence cli 可以很方便的安装 Traffic manager，它会在 K8s 集群自动创建一个命名空间 ambassador，并且部署一个 traffic-manager 的 pod，用于流量管理。
+
+- telepresence daemons
+当用户在本地使用 telepresence connect 指令和当前集群建立连接时，它会在本地会启动两个守护进程 Root Daemon 和 User Daemon。
+    - root daemon
+    用于建立一条双向代理通道，并管理本地电脑与 K8s 集群之间的流量，同时它会负责在本地创建 TUN 设备。
+    - user daemon
+    负责与 Traffic Manager 做通信，在用户需要做拦截需求的时候，它会管理拦截规则，并且它还负责与 Ambassador Cloud 进行通信。
+    
+- traffic agent
+正如图中所看到的，Traffic Agent 其实是 Pod 里的一个 Sidecar Container。
+当用户执行 intercept 指令后，会在 Pod 内安装一个 traffic agent，它是通过 Traffic manager 来注入的。它的主要作用是负责拦截发送到该 Pod 的流量，并转发到本地运行的服务中。
+
+##### global & personal mode
+
+如果确认当前集群只有你个人在使用，可以创建一个全局拦截，它会将远程集群中指定服务的全部流量劫持住，并转发路由到你的本地环境。
+``` sh
+# 开启全局拦截
+$ telepresence intercept nginx --namespace=demo-time --port=3001:80
+# 关闭全局拦截
+$ telepresence leave nginx-demo-time
+```
+
+因为资源问题，基本上很多团队都是共用一个开发环境的的，在这种情况下，我们就不适合采用 Global intercept 了，像上面提到的因为这确实会破坏掉开发环境，影响到团队的开发进度。Telepresence 可以有选择性地仅拦截指定 Service 的部分流量，而不会干扰到其余流量。
+``` sh
+# 创建个人拦截
+$ telepresence intercept nginx --namespace=demo-time \  --port=3001:80 \  --http-header=x-telepresence-intercept-id=foobar
+$ curl http://nginx.demo-time \  -H "x-telepresence-intercept-id: foobar"
+```
+
+#### kt-connect
+
+Kt Connect 是阿里巴巴开源的一款云原生协同开发测试解决方案，它实现了开发者本地运行的服务与 Kubernetes 集群中的服务之间的双向互通，核心功能包括：
+1. 本地直接访问 Kubernetes 集群内网
+2. 本地解析 Kubernetes 服务内网域名
+3. 重定向集群服务流量到本地
+4. 测试环境多人协作互不干扰
+5. 支持 Windows/MacOS/Linux 开发环境
+
+![3246796edf4308723ea34cf35cba47d2.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5910)
+
+##### Exchange mode
+
+ktctl exchange 好比 telepresence 的 global intercept，它会将集群内指定服务的所有请求拦截下来转发到本地的服务。
+![984f19142c03ff93b994e1dcf250c836.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5911)
+
+##### mesh mode
+
+ktctl mesh 好比 telepresence 的 personal intercept，它会将集群内指定服务的部分请求拦截并转发到本地的指定端口。
+![b0fc91841f5fb0a5faa323db21cb8945.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5912)
+![6084ae9f15d7b7ea785ca1365f9e7cdc.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5913)
+
+##### preview mode
+
+Preview 模式 在我看来是 KT-Connect 的一个亮点，它确实是那些缺少 K8s 背景知识的开发同学的福音。它可以将本地运行的服务直接"部署"到 K8s 集群，变成一个临时的服务，提供其他开发者在本地访问或集群中的其他服务使用。
+![2f61551931a6c8ed5f575015f197d3e1.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5914)
+``` sh
+# 将运行在本地 3001端口的 nginx' 注册到测试集群，命名为 nginx-local
+$ ktctl preview nginx-local --expose 3001:8080 -n demo-time
+```
+
+后面集群内的其他服务就可以直接访问 nginx-local 了，其他开发者在执行 sudo -E ktctl connect 后，他们在本地也可以直接进行访问。Preview 模式 可以帮助开发者在开发期间省去写任何 K8s 资源、配置 chart 的时间，非常便于新建服务的开发调试、预览等作用。
+
+#### 对比 telepresence & kt-connect
+
+有一说一，我个人使用下来的体会，觉得 Telepresence 要比 Kt Connect 稳定的太多了，Kt Connect 在使用过程中常常会因为一些不明原因导致 panic 而退出。
+我想它比 Telepresence 好的一个原因是，不需要登陆任何账号，Telepresence 在做拦截操作的时候还需要登陆 ambassador cloud 账号。其实 Telepresence 和 Kt Connect 本质上很像，两者都是 Proxy 模式，通过在本地构建一个 "VPN"，使得本地应用可以直接访问到 Kubernetes 中的服务。

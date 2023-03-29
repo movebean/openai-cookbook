@@ -1,0 +1,1193 @@
+## K8s 工具
+
+[TOC]
+
+***
+
+### Ref
+
+[使用Cobra与Client-go实现Kubernetes自定义插件开发](https://mp.weixin.qq.com/s/EynFXO4IfK-KvFfaZB3FvA)
+
+***
+
+### 通用工具
+
+#### httpie
+- 自动高亮
+- 自动显示 response 头
+```sh
+yum install -y epel-release
+yum install -y httpie
+```
+
+***
+
+### minikube 安装
+
+#### centos
+
+##### 安装 docker
+- 安装 docker
+```sh
+yum install -y yum-utils device-mapper-persistent-data lvm2
+yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+yum list docker-ce --showduplicates
+yum install -y docker-ce-17.12.1.ce
+```
+
+- 如果集群需要运行 1.24 以上的版本，由于 kubernetes 在 >= 1.24 之后就去除了 docker 的依赖，所以需要额外安装 cri-dockerd
+``` sh
+$  wget https://ghproxy.com/https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.1/cri-dockerd-0.3.1.amd64.tgz
+$  tar xzvf cri-dockerd-0.3.1.amd64.tgz 
+$  cp cri-dockerd/cri-dockerd /usr/bin/
+
+$ cat /usr/lib/systemd/system/cri-docker.service
+[Unit]
+Description=CRI Interface for Docker Application Container Engine
+Documentation=https://docs.mirantis.com
+After=network-online.target firewalld.service docker.service
+Wants=network-online.target
+Requires=cri-docker.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/cri-dockerd --network-plugin=cni --pod-infra-container-image=registry.aliyuncs.com/google_containers/pause:3.7
+ExecReload=/bin/kill -s HUP $MAINPID
+TimeoutSec=0
+RestartSec=2
+Restart=always
+
+# Note that StartLimit* options were moved from "Service" to "Unit" in systemd 229.
+# Both the old, and new location are accepted by systemd 229 and up, so using the old location
+# to make them work for either version of systemd.
+StartLimitBurst=3
+
+# Note that StartLimitInterval was renamed to StartLimitIntervalSec in systemd 230.
+# Both the old, and new name are accepted by systemd 230 and up, so using the old name to make
+# this option work for either version of systemd.
+StartLimitInterval=60s
+
+# Having non-zero Limit*s causes performance problems due to accounting overhead
+# in the kernel. We recommend using cgroups to do container-local accounting.
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+
+# Comment TasksMax if your systemd version does not support it.
+# Only systemd 226 and above support this option.
+TasksMax=infinity
+Delegate=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+
+$ cat /usr/lib/systemd/system/cri-docker.service 
+[Unit]
+Description=CRI Interface for Docker Application Container Engine
+Documentation=https://docs.mirantis.com
+After=network-online.target firewalld.service docker.service
+Wants=network-online.target
+Requires=cri-docker.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/cri-dockerd --network-plugin=cni --pod-infra-container-image=registry.aliyuncs.com/google_containers/pause:3.7
+ExecReload=/bin/kill -s HUP $MAINPID
+TimeoutSec=0
+RestartSec=2
+Restart=always
+
+# Note that StartLimit* options were moved from "Service" to "Unit" in systemd 229.
+# Both the old, and new location are accepted by systemd 229 and up, so using the old location
+# to make them work for either version of systemd.
+StartLimitBurst=3
+
+# Note that StartLimitInterval was renamed to StartLimitIntervalSec in systemd 230.
+# Both the old, and new name are accepted by systemd 230 and up, so using the old name to make
+# this option work for either version of systemd.
+StartLimitInterval=60s
+
+# Having non-zero Limit*s causes performance problems due to accounting overhead
+# in the kernel. We recommend using cgroups to do container-local accounting.
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+
+# Comment TasksMax if your systemd version does not support it.
+# Only systemd 226 and above support this option.
+TasksMax=infinity
+Delegate=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+[root@k8s-1 ~]# cat /usr/lib/systemd/system/cri-docker.socket
+[Unit]
+Description=CRI Docker Socket for the API
+PartOf=cri-docker.service
+
+[Socket]
+ListenStream=%t/cri-dockerd.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=docker
+
+[Install]
+WantedBy=sockets.target
+
+$ systemctl daemon-reload
+$ systemctl restart cri-docker
+```
+
+##### 安装 crictl
+
+``` sh
+$ VERSION = "v1.26.1"
+$ wget https://github.com/kubernetes-sigs/cri-tools/releases/download/$VERSION/crictl-$VERSION-linux-amd64.tar.gz
+$ tar -zxvf crictl-v1.26.0-linux-amd64.tar.gz
+crictl
+$ chmod +x crictl
+$ mv crictl /usr/local/bin/
+```
+
+##### 安装 minikube
+
+- 安装 minikube
+```sh
+curl -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64   && chmod +x minikube
+cp minikube /usr/local/bin/
+```
+
+- 启动
+```sh
+minikube start --alsologtostderr --v=8 --image-mirror-country=cn --wait-timeout=1m0s --driver=none
+```
+
+- 安装 kubectl
+```sh
+curl -LO https://dl.k8s.io/release/v1.15.0/bin/linux/amd64/kubectl
+chmod +x kubectl
+mv kubectl /usr/local/bin/
+```
+
+- 升级 minikube
+可以通过minikube start --kubernetes-version=v1.18.0
+这种方式便利升级，
+
+但有可能在 download kubeadm kubelet 的时候失败，那么可以手动下载这两个 binary 在 minikube 的 cache 中，直接使用
+
+```sh
+curl https://storage.googleapis.com/kubernetes-release/release/v1.18.1/bin/linux/amd64/kubeadm -o kubeadm
+curl https://storage.googleapis.com/kubernetes-release/release/v1.18.1/bin/linux/amd64/kubelet -o kubelet
+```
+
+这里需要注意的是 mac 上的 minikube，其实际上还是下载的 linux 的 binary，因为是跑在虚拟机上的
+
+- centos升级minikube
+
+    - 清理现场
+    docker ps -a | awk '{print $1}' | xargs docker rm
+    rm -rf ~/.minikube
+    minikube stop
+    minikube delete
+    
+    - 下载kubectl
+    curl -LO https://dl.k8s.io/release/v1.21.0/bin/linux/amd64/kubectl
+    
+    - 通过minikube start指定kubernetes cluster的版本
+    minikube start --registry-mirror=https://registry.docker-cn.com --image-repository=registry.cn-hangzhou.aliyuncs.com/google_containers --vm-driver=none --alsologtostderr -v=8 --base-image registry.cn-hangzhou.aliyuncs.com/google_containers/kicbase:v0.0.10 --kubernetes-version=v1.21.1
+
+Ref：[一遍过，Centos7下minikube安装k8s学习环境](https://zhuanlan.zhihu.com/p/141831571)
+
+#### minikube certs 过期
+从网上找了一篇比较危险的操作方式
+1. 首先将 minikube vm 中的 certs 删除
+[Renew cert on start if current cert has has expired](https://github.com/kubernetes/minikube/issues/10122#issuecomment-860623078)
+PS：这里删除之后问题很多
+2. （因为删除的太多了）控制面各个组件之间出现各种 tls handshake 超时的问题，so 删除所有 service account token
+``` sh
+kubectl get secrets  --all-namespaces  --no-headers  | grep service-account-token | awk '{system("kubectl -n "$1" delete secrets "$2)}'
+```
+3. 删除之后重启控制面组件
+``` sh
+kubectl -n kube-system delete pod --all
+```
+4. 由于第二步，也同时删除了各个命名空间的 service account default token，需要修复
+> MountVolume.SetUp failed for volume secret not found Issue
+
+解决方案：[MountVolume.SetUp failed for volume secret not found Issue](https://finisky.github.io/2020/05/21/kubernetesrecoversecret/)
+即手动根据报错，创建各个命名空间的 default secret token
+PS：注意这份文档中没有突出命名空间
+***
+
+### kwok
+
+#### kwok 安装
+
+``` sh
+# Kwok repository
+KWOK_REPO=kubernetes-sigs/kwok
+# Get latest
+KWOK_LATEST_RELEASE=$(curl "https://api.github.com/repos/${KWOK_REPO}/releases/latest" | jq -r '.tag_name')
+wget -O kwokctl -c "https://github.com/${KWOK_REPO}/releases/download/${KWOK_LATEST_RELEASE}/kwokctl-$(go env GOOS)-$(go env GOARCH)"
+chmod +x kwokctl
+sudo mv kwokctl /usr/local/bin/kwokctl
+wget -O kwok -c "https://github.com/${KWOK_REPO}/releases/download/${KWOK_LATEST_RELEASE}/kwok-$(go env GOOS)-$(go env GOARCH)"
+chmod +x kwok
+sudo mv kwok /usr/local/bin/kwok
+```
+
+#### kwok 本地运行
+
+##### in local
+``` sh
+$ kwok \
+  --kubeconfig=~/.kube/config \
+  --manage-all-nodes=false \
+  --manage-nodes-with-annotation-selector=kwok.x-k8s.io/node=fake \
+  --manage-nodes-with-label-selector= \
+  --disregard-status-with-annotation-selector=kwok.x-k8s.io/status=custom \
+  --disregard-status-with-label-selector= \
+  --cidr=16.0.0.1/24 \
+  --node-ip=16.0.0.1
+```
+
+##### in host
+``` sh
+# 创建集群
+$ kwokctl create cluster --name=kwok
+# 查询集群
+$ kwokctl get clusters
+# 删除集群
+$ kwokctl delete cluster --name=kwok
+```
+
+
+
+***
+
+### kubectl 自动补全
+
+- 安装 bash-completion
+
+```sh
+yum install bash-completion -y
+source <(kubectl completion bash)
+```
+
+- 自定义了一些 krew 插件的补全逻辑 [custom.completion.sh](evernote:///view/34874899/s39/71f04d08-3a2e-44f5-8147-393f7f53c0ab/71f04d08-3a2e-44f5-8147-393f7f53c0ab/)
+
+***
+
+### stern 日志查看工具
+
+#### stern 安装
+
+- macos
+
+```sh
+brew install stern
+```
+
+- linux
+
+```sh
+wget https://github.com/wercker/stern/releases/download/1.11.0/stern_linux_amd64
+chmod +x stern_linux_amd64
+mv stern_linux_amd64 /usr/local/bin/
+```
+
+#### stern 使用
+
+- kubeconfig
+```sh
+stern --kubeconfig cls-xxxxx .
+```
+
+- namespace
+```sh
+stern -ntsf-build-controller-system .
+```
+
+- container_name
+```sh
+stern -ntsf-build-controller-system -c build-and-push .
+```
+
+- label selector
+```sh
+stern --all-namespaces -l app=tsf_build .
+```
+***
+
+### kubectl-alias
+
+#### kubectl-alias 安装
+
+```sh
+git clone https://github.com/ahmetb/kubectl-aliases
+python generate_aliases.py  > kubectlalias.sh
+vim ~/.bashrc #(or ~/.zshrc) add `source` command
+```
+
+#### kubectl-alias 使用
+
+- 语法解读
+
+    - k=kubectl
+        - sys=--namespace kube-system
+    - commands:
+        - g=get
+        - d=describe
+        - rm=delete
+        - a:apply -f
+        - ak:apply -k
+        - k:kustomize
+        - ex: exec -i -t
+        - lo: logs -f
+    - resources:
+        - po=pod
+        - dep=deployment
+        - ing=ingress
+        - svc=service
+        - cm=configmap
+        - sec=secret
+        - ns=namespace
+        - no=node
+    - flags:
+        - output format: oyaml, ojson, owide
+        - all: --all or --all-namespaces depending on the command
+        - sl: --show-labels
+        - w=-w/--watch
+        - value flags (should be at the end):
+        - n=-n/--namespace
+        - f=-f/--filename
+        - l=-l/--selector
+
+- 例子
+
+以 yaml 方式拉取某个 pod
+```sh
+kgpooyaml xxxx-pod
+```
+logs \-f 拉取 pod 日志
+```sh
+klo xxxx-pod
+```
+
+***
+
+### kubectx kubens
+
+#### kubectx kubens 安装
+
+```sh
+git clone https://github.com/ahmetb/kubectx
+cp ./kubectx/kubectx /usr/local/bin/
+cp ./kubectx/kubens /usr/local/bin/
+```
+
+#### kubectx kubens 使用
+
+- 显示当前所有的 context
+```sh
+kubectx
+```
+
+- 切换 context
+```sh
+kubectx cls-build-gz-context
+```
+
+- 显示当前所有的 namespace
+```sh
+kubens
+```
+![171adedbcc413e0f9d0806c9edf3e79a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3312)
+
+
+- 切换 namespace
+```sh
+kubens tsf-build-controller-system
+```
+
+- 类似 `cd -` 的来回跳跃
+
+```sh
+kubectx -
+kubens -
+```
+
+***
+
+### telepresence
+
+千万别在生产环境中使用，感觉很不稳定，`感觉是和 operkruise 冲突了`，因为每次运行 telepresence，operkruise 的controller-manager 就要挂一下
+`靠，关了腾讯的 IOA 就好了`
+本地通过 minikube，可能可以在开发的时候使用一下
+
+#### Ref
+
+[website](https://www.telepresence.io/docs/v1/tutorials/kubernetes/)
+[github](https://github.com/telepresenceio/telepresence)
+[slack](https://a8r.io/slack)
+
+***
+
+### krew
+
+[krew plugin list](https://krew.sigs.k8s.io/plugins/)
+
+#### krew 安装
+
+```sh
+(
+  set -x; cd "$(mktemp -d)" &&
+  OS="$(uname | tr '[:upper:]' '[:lower:]')" &&
+  ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" &&
+  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/krew.tar.gz" &&
+  tar zxvf krew.tar.gz &&
+  KREW=./krew-"${OS}_${ARCH}" &&
+  "$KREW" install krew
+)
+```
+
+```sh
+./krew-linux_amd64 install krew
+```
+
+#### kubectl-status
+
+```sh
+kubectl krew install status
+```
+
+- 使用
+```sh
+$ kubectl status cloneset apm-jar
+
+CloneSet/apm-jar -n default, created 4d ago, gen:13
+  Current: Resource is current
+  Managed by apm-jar application
+  desired:2, existing:2, ready:2, updated:2, available:2
+  Known/recorded manage events:
+    4d ago Updated by Kubernetes Java Client (metadata, spec)
+    4d ago Updated by kruise-manager (status)
+    41s ago Updated by manager (metadata, spec)
+  Events:
+    SuccessfulCreate 1m ago from cloneset-controller: succeed to create pod apm-jar-nnqgq
+    SuccessfulCreate 1m ago from cloneset-controller: succeed to create pod apm-jar-vhwjj
+    SuccessfulDelete 41s ago from cloneset-controller: succeed to delete pod apm-jar-v82sj
+    SuccessfulDelete 41s ago from cloneset-controller: succeed to delete pod apm-jar-gpkg6
+```
+
+#### kubectl-tree
+```sh
+kubectl krew search tree
+kubectl krew install tree
+```
+
+- 使用
+```sh
+$ kubectl tree deployment opa
+NAMESPACE  NAME                          READY  REASON  AGE 
+opa        Deployment/opa                -              3h5m
+opa        └─ReplicaSet/opa-579fd6945d   -              3h5m
+opa          └─Pod/opa-579fd6945d-xpxjq  True           3h5m
+```
+
+#### tmux-exec
+
+通过 label 选择pod，并行执行 exec，很有意思
+
+```sh
+kubectl krew install tmux-exec
+```
+
+- 使用
+```sh
+# k get pods --show-labels 
+NAME      READY   STATUS    RESTARTS   AGE   LABELS
+redis-0   1/1     Running   30         27d   app=redis,controller-revision-hash=redis-84cd5d9b8d,role=master,statefulset.kubernetes.io/pod-name=redis-0
+redis-1   1/1     Running   30         27d   app=redis,controller-revision-hash=redis-84cd5d9b8d,role=master,statefulset.kubernetes.io/pod-name=redis-1
+# k tmux-exec -l app=redis sh
+```
+![aca5b8827ec8994e79443cf912c93b54.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4239)
+
+#### ctx
+
+就是 kubectx 的插件形态
+
+```sh
+kubectl krew install ctx
+```
+
+- 使用
+```sh
+# k ctx
+kubernetes-admin@kubernetes
+```
+
+#### kubectl-ns
+
+就是 kubens 的插件形态
+
+```sh
+kubectl krew install ns
+```
+
+- 使用
+```sh
+# k ns
+auto-push
+default
+expensive
+ingress-nginx
+kaniko-test
+kruise-system
+kruise-test
+kube-node-lease
+kube-public
+kube-system
+logging
+opa
+production
+qa
+redis-test2
+staging
+```
+
+#### kubectl-images
+
+列出来集群中所有的镜像
+
+```sh
+kubectl krew install images
+```
+
+- 使用
+```sh
+# k images
+[Summary]: 1 namespaces, 2 pods, 4 containers and 1 different images
++---------+-------------------+----------------+
+| PodName |   ContainerName   | ContainerImage |
++---------+-------------------+----------------+
+| redis-0 | redis             | redis:6.2.6    |
++         +-------------------+                +
+|         | (init) init-redis |                |
++---------+-------------------+                +
+| redis-1 | redis             |                |
++         +-------------------+                +
+|         | (init) init-redis |                |
++---------+-------------------+----------------+
+# k images -A
+[Summary]: 10 namespaces, 31 pods, 36 containers and 21 different images
++--------------------------------------------+-------------------------+------------------------------------------------------------+
+|                  PodName                   |      ContainerName      |                       ContainerImage                       |
++--------------------------------------------+-------------------------+------------------------------------------------------------+
+| cronjob-dood-1638838800-d42nt              | docker-cmds             | uttne/dood:1.0.0                                           |
++--------------------------------------------+                         +                                                            +
+| cronjob-dood-1638842400-f6rkl              |                         |                                                            |
++--------------------------------------------+                         +                                                            +
+| cronjob-dood-1638846000-sq29l              |                         |                                                            |
++--------------------------------------------+-------------------------+------------------------------------------------------------+
+| nettool-ds-dmflr                           | nettool                 | uttne/nettool:1.0.2                                        |
++--------------------------------------------+-------------------------+                                                            +
+| test-pod                                   | test-pod                |                                                            |
++--------------------------------------------+-------------------------+------------------------------------------------------------+
+```
+
+#### kubectl-lineage
+
+和 tree 很相似，信息更多
+
+```sh
+kubectl krew install lineage
+```
+
+- 使用
+```sh
+# k lineage serviceaccounts default 
+NAME                                              READY   STATUS                                                                                                                                                                                                                                                                                                                                                                    AGE
+ServiceAccount/default                            -                                                                                                                                                                                                                                                                                                                                                                                 25d
+├── Pod/demo-clone-2spjq                          1/1     Running                                                                                                                                                                                                                                                                                                                                                                   25d
+│   ├── Event/demo-clone-2spjq.16c2009cf1295632   -       SandboxChanged: Pod sandbox changed, it will be killed and re-created. (x2)                                                                                                                                                                                                                                                                                               16m
+│   ├── Event/demo-clone-2spjq.16c2009d67bddbdd   -       FailedCreatePodSandBox: Failed to create pod sandbox: rpc error: code = Unknown desc = failed to set up sandbox container "5e342423fff214b6cc2a87607446d4312e32db32525fc9a21c6d46fd49ee91c0" network for pod "demo-clone-2spjq": networkPlugin cni failed to set up pod "demo-clone-2spjq_kruise-test" network: open /run/flannel/subnet.env: no such file or directory   16m
+│   ├── Event/demo-clone-2spjq.16c2009e8503b0a5   -       Pulling: Pulling image "registry.cn-hangzhou.aliyuncs.com/kruise-test/guestbook:v1"                                                                                                                                                                                                                                                                                       16m
+│   ├── Event/demo-clone-2spjq.16c200a806c979bb   -       Pulled: Successfully pulled image "registry.cn-hangzhou.aliyuncs.com/kruise-test/guestbook:v1" in 40.831911075s                                                                                                                                                                                                                                                           16m
+│   ├── Event/demo-clone-2spjq.16c200a8088c26f4   -       Created: Created container guestbook                                                                                                                                                                                                                                                                                                                                      16m
+│   └── Event/demo-clone-2spjq.16c200a810f2991f   -       Started: Started container guestbook                                                                                                                                                                                                                                                                                                                                      16m
+├── Pod/demo-clone-4xwrr                          1/1     Running                                                                                                                                                                                                                                                                                                                                                                   25d
+│   ├── Event/demo-clone-4xwrr.16c2009c1eaa6737   -       FailedMount: 
+```
+#### kubectl-sniff
+
+[端云联调](evernote:///view/34874899/s39/1e60eb40-f63d-4d91-bb87-caef6a90f56e/1e60eb40-f63d-4d91-bb87-caef6a90f56e/)
+
+#### kubectl-pod-lens
+
+[github pod-lens](https://github.com/sunny0826/kubectl-pod-lens)
+
+##### pod-lens 安装
+- mac
+```sh
+$ kubectl krew install pod-lens
+```
+- source（注意最后可执行文件要保存为 kubectl-pod_lens）
+```sh
+$ git clone https://github.com/sunny0826/kubectl-pod-lens.git
+$ cd kubectl-pod-lens/ && make bin && chmod +x bin/pod-lens && mv bin/pod-lens ~/.krew/bin/kubectl-pod_lens
+```
+
+##### pod-lens 使用
+![db2d360bcd07ba5cf08306fafd347e89.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4991)
+
+#### kubectl-iexec
+
+[github iexec](https://github.com/gabeduke/kubectl-iexec)
+
+##### kiexec 安装
+- mac
+```sh
+$ kubectl krew install iexec
+```
+
+- source
+```sh
+$ go fmt ./pkg/... ./cmd/...
+$ go vet ./pkg/... ./cmd/...
+$ go build -o bin/kubectl-iexec . 
+```
+
+##### kiexec 使用
+- 手选
+![d7dabb5032f88552a1dc6986cf4a437f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4992)
+![14bc43e8736e02a6b7d97fcba28bd7aa.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4993)
+- 模糊匹配
+![1f826c76abcd53230e7a107b122958c5.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4994)
+
+#### kubectl-view-secret
+##### kvs 安装
+- mac
+```sh
+$ kubectl krew install view-secret
+```
+- source（注意最后可执行文件要保存为 kubectl-view_secret）
+```sh
+$ go fmt ./pkg/... ./cmd/...
+$ go vet ./pkg/... ./cmd/...
+$ go build -o kubectl-view-secret ./cmd/*.go
+$ chmod +x kubectl-view-secret
+$ mv kubectl-view-secret ~/.krew/bin/kubectl-view_secret
+```
+##### kvs 使用
+![cd43485438db8f307f693e08bf0a9600.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4995)
+
+#### kubectl-fuzzy
+
+[github | kubectl-fuzzy](https://github.com/d-kuro/kubectl-fuzzy)
+##### kf 安装
+- mac
+```sh
+$ k krew install fuzzy
+```
+- source
+```sh
+$ cd kubectl-fuzzy && make && chmod +x dist/kubectl-fuzzy
+```
+
+##### kf 使用
+![56e66bf9ee69aac67d046a160bd6f62a.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p4996)
+
+#### tunnel
+
+集群和本地机器之间的反向隧道
+允许您将计算机作为集群中的服务公开，或者将其公开给特定的部署。这个项目的目的是为这个特定的问题提供一个整体的解决方案(从kubernetes pod访问本地机器)。
+
+##### tunnel 安装
+
+``` sh
+$ kubectl krew install tunnel
+```
+
+##### tunnel 使用
+
+``` sh
+# term 1
+$ nc -l 8011
+
+# term 2
+$ k tunnel expose myapp 8088:8011
+$ k get deployment
+NAME    READY   UP-TO-DATE   AVAILABLE   AGE
+myapp   1/1     1            1           92m
+$ k get pod                                             
+NAME                     READY   STATUS    RESTARTS   AGE
+myapp-7f45877986-mm8cm   1/1     Running   0          87m
+nettool                  1/1     Running   12         229d
+$ k get service
+NAME                      TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+image-qyang-io-k8s        ClusterIP   10.96.40.93     <none>        8081/TCP   262d
+kubernetes                ClusterIP   10.96.0.1       <none>        443/TCP    610d
+myapp                     ClusterIP   10.97.106.234   <none>        8088/TCP   88m
+service-redis             ClusterIP   10.104.197.37   <none>        6379/TCP   340d
+svc-monitor-svc-go-demo   ClusterIP   10.98.211.247   <none>        8001/TCP   341d
+
+# term 3
+$ k exec -it nettool -- sh
+/ # nc myapp 8088
+asdf
+asdf
+okk
+
+# term 1
+asdf
+asdf
+okk
+```
+
+#### kubectl plugin 开发
+
+[使用 Go 从零开发并发布一个 Kubectl 插件 | 4star](https://mp.weixin.qq.com/s/Uuc93coxXZCQzCbq2jk9tw)
+
+***
+
+### dive
+
+可以用来分析镜像细节，类似 docker image history，但提供更多更详细的功能
+- 每一层的构建命令更加详细
+- 每一层对文件系统的改动更加清晰
+- 整体镜像大小的效率
+- 现在（2021.7.16）处于 beta 期，使用上有一些明显 bug
+
+[github](https://github.com/wagoodman/dive)
+
+#### dive 安装
+
+- docker
+
+```sh
+dive() {
+  docker run --rm -it \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v  "$(pwd)":"$(pwd)" \
+  -w "$(pwd)" \
+  -v "$HOME/.dive.yaml":"$HOME/.dive.yaml" \
+  wagoodman/dive:latest "$@"
+}
+```
+
+- mac
+
+```sh
+brew install dive
+```
+
+#### dive 使用方式
+
+- shell
+```sh
+dive <image>
+```
+
+![1684ea2776b55db423e2b89b98e74813.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3334)
+
+***
+
+### yq
+
+用来解析 yaml 文件，类比 json 文件的 jq 工具
+- 解析 yaml
+- 更新 yaml
+- json 和 yaml 互转
+- 标准输入 `-`
+
+#### yq 安装
+
+- 一次性运行
+
+```sh
+yq() {
+  docker run --rm -i -v "${PWD}":/workdir gksoftware/yq yq "$@"
+}
+```
+
+#### yq 使用方式
+
+- 读取文件yaml
+
+```sh
+$ yq read upgradetest.yaml spec.parameter
+batchCount: 3
+batchInterval: 5
+betaBatchNum: 0
+type: AUTO
+```
+
+- 输出 json
+```sh
+$ yq read upgradetest.yaml spec.parameter -j
+{"batchCount":3,"batchInterval":5,"betaBatchNum":0,"type":"AUTO"}
+```
+
+- 读取标准输出
+```sh
+$ k get upgradestrategy rock-test -o yaml  | yq read - status.podMappingDetail
+- endTime: 2021-07-16 12:40:59
+  index: 0
+  podMap:
+    rock-test-xlhxz: rock-test-2d8rq
+  podNum: 1
+  startTime: 2021-07-16 12:40:12
+- endTime: ""
+  index: 1
+  podMap:
+    rock-test-mp4jl: ""
+    rock-test-sg7gl: ""
+  podNum: 2
+  startTime: 2021-07-16 12:41:05
+- endTime: ""
+  index: 2
+  podMap:
+    rock-test-7kxrn: ""
+    rock-test-jq625: ""
+  podNum: 2
+  startTime: ""
+```
+
+***
+
+### kt-connect
+
+[Kt Connect：研发侧利器，本地连通 Kubernetes 集群内网](https://developer.aliyun.com/article/751321)
+
+类似 telepresence 的工具，提供：
+- 本地调用集群服务
+- 远程服务导流到本地
+- 本地服务暴露到远程集群
+
+#### kt-connect 远程服务导流到本地
+
+**该模式下会将集群内的 pod 数量杀到 0，所以需要注意对生产环境的影响**
+> $ k get deployment
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+kt-connect-daemon-bmlxx   1/1     1            1           32s
+kt-connect-daemon-hhyrm   1/1     1            1           30m
+netutil                   1/1     1            1           3d19h
+web                       0/0     0            0           3d19h
+web-kt-npdrx              1/1     1            1           13m
+
+- 启动 ktctl exchange 导流组件，下面的例子将 web service 的远程服务，暴露在了本地的 80 端口上，需要在本地起一个监听 80 端口的服务
+```sh
+$ ktctl exchange web --expose 80
+```
+- 本地监听80
+```sh
+$ nc -l 80
+```
+
+- 在集群中调用 web 服务
+```sh
+$ curl http://web
+```
+
+- 观察结果
+此时在本地的 80 端口上可以收到 http 请求
+> GET / HTTP/1.1
+Host: web
+User-Agent: curl/7.61.1
+Accept: */*
+
+> asdfasd
+adsasdf
+\r\n
+
+甚至可以回复数据并在集群内显示
+> $ curl http://web
+asdfasd
+adsasdf
+\r\n
+
+
+***
+
+### skopeo
+
+[github](https://github.com/containers/skopeo)
+[一文带你上手镜像搬运工具 Skopeo](https://mp.weixin.qq.com/s/TfG_NHXRmBV_V_grOvzesQ)
+
+#### skopeo 安装
+
+- macos
+```sh
+brew install skopeo
+```
+
+- docker
+```sh
+skopeo() {
+ 	docker run \
+		--network=host \
+		-v /etc/resolv.conf:/etc/resolv.conf \
+		-v "$(pwd)":"$(pwd)" \
+		-w "$(pwd)" \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-it --rm --name skopeo-test ananace/skopeo "$@"
+}
+```
+
+#### skopeo 镜像格式
+
+![1d3736821a4905bc4991d23917207fde.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3634)
+
+#### skopeo 使用方式
+
+- pull 镜像
+```sh
+$ skopeo copy docker://docker.io/uttne/nettool:1.0.2 docker-daemon:uttne/nettool:1.0.2
+Getting image source signatures
+Copying blob 5843afab3874 done  
+Copying blob f11ec685b53a done  
+Copying blob 43794add2af0 done  
+Copying config 3f50dcffeb done  
+Writing manifest to image destination
+Storing signatures
+```
+
+- push 镜像
+```sh
+$ skopeo copy docker-daemon:alpine:3.12 docker://hub.k8s.li/library/alpine:3.12
+```
+
+- 拉到本地目录里
+```sh
+$ skopeo copy docker://docker.io/uttne/nettool:1.0.2 dir:nettool:1.0.2
+```
+
+- 列出 tags
+```sh
+$ skopeo list-tags docker://docker.io/uttne/nettool
+
+{
+    "Repository": "docker.io/uttne/nettool",
+    "Tags": [
+        "1.0.0",
+        "1.0.1",
+        "1.0.2"
+    ]
+}
+```
+
+- inspect
+--config 选项可以看到历史命令
+```sh
+$ skopeo inspect docker://docker.io/uttne/nettool:1.0.2
+
+{
+    "Name": "docker.io/uttne/nettool",
+    "Digest": "sha256:5f5d40dce89e9ed0f01746bc627bbad1975e19533855c7b1db01463c369c5bdf",
+    "RepoTags": [
+        "1.0.0",
+        "1.0.1",
+        "1.0.2"
+    ],
+    "Created": "2021-07-17T21:02:56.90605095Z",
+    "DockerVersion": "17.12.1-ce",
+    "Labels": null,
+    "Architecture": "amd64",
+    "Os": "linux",
+    "Layers": [
+        "sha256:5843afab387455b37944e709ee8c78d7520df80f8d01cf7f861aae63beeddb6b",
+        "sha256:f11ec685b53ae61727a03785951330b20a1d3f3aa20dabca135926f9d8da2228",
+        "sha256:43794add2af03cad647d08b5bbafc715e41f165cd60989ece9ced9fefed53aac"
+    ],
+    "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ]
+}
+```
+
+- sync
+
+```sh
+skopeo sync --src docker --dest dir docker.io/uttne/nettool nettool-dir-sync
+```
+![2c5f28e65b909e6dd56b9f5bba58800f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p3978)
+
+***
+
+### Kind
+
+[kind](evernote:///view/34874899/s39/15cd6945-9e53-456f-86c1-5a5db2d3288a/15cd6945-9e53-456f-86c1-5a5db2d3288a/)
+
+***
+
+### container-diff
+
+#### container-diff 安装
+
+- macos
+```sh
+curl -LO https://storage.googleapis.com/container-diff/latest/container-diff-darwin-amd64 && chmod +x container-diff-darwin-amd64 && sudo mv container-diff-darwin-amd64 /usr/local/bin/container-diff
+```
+
+- linux
+```sh
+curl -LO https://storage.googleapis.com/container-diff/latest/container-diff-linux-amd64 && chmod +x container-diff-linux-amd64 && sudo mv container-diff-linux-amd64 /usr/local/bin/container-diff
+```
+
+#### container-diff 使用
+
+- 分析单个镜像
+```sh
+container-diff analyze <img>     [Run default analyzers]
+container-diff analyze <img> --type=history  [History]
+container-diff analyze <img> --type=file  [File System]
+container-diff analyze <img> --type=pip  [Pip]
+container-diff analyze <img> --type=apt  [Apt]
+container-diff analyze <img> --type=node  [Node]
+container-diff analyze <img> --type=apt --type=node  [Apt and Node]
+container-diff analyze <img> --type=layer
+```
+
+- 多个镜像对比
+```sh
+container-diff diff <img1> <img2>     [Run default differs]
+container-diff diff <img1> <img2> --type=history  [History]
+container-diff diff <img1> <img2> --type=file  [File System]
+container-diff diff <img1> <img2> --type=pip  [Pip]
+container-diff diff <img1> <img2> --type=apt  [Apt]
+container-diff diff <img1> <img2> --type=node  [Node]
+container-diff diff <img1> <img2> --type=layer [Layer]
+```
+
+***
+
+### helm
+
+可以把 Helm 想象成 Kubernetes 式的 apt 或 dnf。使用此应用程序，你可以更轻松地将预构建的应用程序部署（甚至自定义）到 Kubernetes 集群。
+
+Helm 背后的神奇之处在于 Helm Charts，它是一个预先配置的资源的打包集合，用于部署应用程序和服务。通过使用 Helm，你可以显著提高 Kubernetes 的生产效率，同时也可以更轻松地一次又一次地重新创建成功的部署。
+
+[artifact hub](https://artifacthub.io/)
+可以搜索对应软件的 helm 信息，包括 repo，以及安装命令
+
+#### helm 安装
+
+Helm 的安装非常简单。登录到 Kubernetes 机器并发出以下命令：
+``` sh
+curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+```
+
+#### helm charts
+
+让我们先谈谈 Helm chart 的结构。典型的 Helm chart 由以下文件组成：
+
+- .helmignore：包含打包 chart 时将被忽略的所有文件。
+
+- Chart.yaml：包含有关正在打包的 chart 的所有信息（例如类型、版本和 appVersion）。
+
+- Values.yaml：包含要注入模板的所有定义。
+
+- charts：包含 chart 所依赖的其他 charts 的目录。
+
+- templates：存放要部署的清单的目录。
+
+#### helm repo
+
+和 yum 的 repo 很像，安装具体的 charts 之前，需要知道该 charts 在哪个 repo，首先安装对应的 repo
+- 以下命令可以列出已经安装的所有 repo
+``` sh
+helm repo list
+```
+- 安装 repo
+``` sh
+helm repo add kedacore https://kedacore.github.io/charts
+```
+
+- 搜索（list）repo 中的 charts
+``` sh
+$ helm search repo kedacore
+NAME                                    	CHART VERSION	APP VERSION	DESCRIPTION                                       
+kedacore/external-scaler-azure-cosmos-db	0.1.0        	0.1.0      	Event-based autoscaler for Azure Cosmos DB chan...
+kedacore/keda                           	2.6.2        	2.6.1      	Event-based autoscaler for workloads on Kubernetes
+kedacore/keda-add-ons-http              	0.3.0        	0.3.0      	Event-based autoscaler for HTTP workloads on Ku...
+```
+
+- 更新 repo
+``` sh
+helm repo update
+```
+
+- 安装 charts
+``` sh
+helm install <name> <charts> <options>
+```
+
+***
+
+### cloudtty
+
+底层利用了 ttyd，ttyd 能够将命令行通过 web 暴露，cloudtty 主要工作是将 ttyd 包在一个 job/pod 中，并通过 service 暴露
+
+[ttyd - Share your terminal over the web](https://tsl0922.github.io/ttyd/)
+[ttyd - Example-Usage](https://github.com/tsl0922/ttyd/wiki/Example-Usage)
+[ttyd - 二进制下载](https://github.com/tsl0922/ttyd/releases)
+[CloudTTY：下一代云原生开源 Cloud Shell](https://mp.weixin.qq.com/s/sFjZmvumQNbP6gnlnpglWQ)
+
+#### ttyd
+##### ttyd 安装
+
+- macos
+brew install ttyd
+
+- docker
+tsl0922/ttyd
+
+- linux 二进制安装
+``` sh
+wget https://github.com/tsl0922/ttyd/releases/download/1.6.3/ttyd.x86_64
+```
+
+##### ttyd 使用
+
+- macos
+``` sh
+ttyd -p 8088 bash -x
+```
+
+- docker
+``` sh
+docker run -it --rm -p 7681:7681 tsl0922/ttyd
+```
+
+- lighthouse 测试
+``` sh
+nohup ./ttyd.x86_64 -c admin:admin123 bash 1>/dev/null 2>&1 &
+```
+之后就可以通过 web 方式访问 lighthouse 服务器了
+
+***
+
+### kubecolor
+
+#### kubecolor 安装
+
+- macos
+``` sh
+$ brew install dty1er/tap/kubecolor
+```
+
+- golang
+``` sh
+go get -u github.com/dty1er/kubecolor/cmd/kubecolor
+```
+
+#### kubecolor 使用
+
+正常和 kubectl 一样使用
+``` sh
+alias kubectl="kubecolor"
+alias k="kubecolor"
+```

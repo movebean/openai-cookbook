@@ -1,0 +1,217 @@
+## 调度/gpu
+
+[TOC]
+
+### Ref
+
+[买了GPU后，我哭了18次…](https://mp.weixin.qq.com/s/-M_AmULm23baqtBMRgccQA)
+- 广告方式推广了vGPU池化思路
+
+[Advance Deep Learning with Alibaba Open-Source and Pluggable Scheduling Tool for GPU Sharing](https://www.alibabacloud.com/blog/advance-deep-learning-with-alibaba-open-source-and-pluggable-scheduling-tool-for-gpu-sharing_594785?spm=a2c65.11461447.0.0.df5c56760poPHu)
+- 比较早的一篇 GPU 共享的文章（2019）
+- 比较`实操`，也带上了 github 源码地址，主要是通过 scheduler extender 以及 device plugin 实现
+- 没有池化的内容（vGPU)
+- 应该可以得出结论，GPU 以及 GPU mem 资源不能跨 Node 共享（更新，并非不可能通过网络共享，但已经超过常规技术了）
+
+[How Virtual GPUs Enhance Sharing in Kubernetes for Machine Learning on VMware vSphere | 5star](https://core.vmware.com/blog/how-virtual-gpus-enhance-sharing-kubernetes-machine-learning-vmware-vsphere)
+- 从文字中应该可以得出结论：只有 vGPU 才能池化（更新，并非不可能通过网络共享，但已经超过常规技术了），而在裸金属上直接使用 GPU 只能绑到一个 pod 上，再比如文章中对 vGPU 的简单定义是：vGPU represents a part of, or all of, a physical GPU.
+> A Kubernetes pod running on a bare metal server that needs a GPU, has exclusive access to that GPU
+> 
+> This means that on physical machines, the entire GPU is dedicated to that one pod – this can be wasteful of GPU power
+> 
+> vGPUs solve this issue by allowing a virtual GPU (vGPU) to represent part of a physical GPU to the Kubernetes pod scheduler. This optimizes the use of the GPU hardware and it can serve more than one user, reducing costs.
+> 
+> The test described above shows that the GPU required by a pod in its spec is fulfilled by a vGPU profile on a node. `Using vGPUs, therefore, we do not have to dedicate a full physical GPU to one pod`.
+- 可以有各种形式的 vGPU 与物理 GPU 切分方案：n：1、m：n，甚至同一个物理节点上一个 GPU，被不同 k8s 集群 Node 共享
+- 但是 pod spec limits 对于 extended resources 的分配单位最小还是 1，所以有一些其他思路，比如对于不同型号的 GPU，以算力对等上一定单位，比如 1000，这样每个 pod 在申请的时候，可以更小粒度申请
+
+[Streamlining Kubernetes Networking in Scale-out GPU Clusters with the new NVIDIA Network Operator 1.0](https://developer.nvidia.com/blog/streamlining-kubernetes-networking-in-scale-out-gpu-clusters-with-the-new-nvidia-network-operator-1-0/)
+- GPU 算力可以通过网络共享 GPUDirect RDMA，应该不是常规技术，不能在 k8s 的层面铺开
+> Paired with the GPU Operator, the Network Operator enables GPUDirect RDMA, a key technology that accelerates cloud-native AI workloads by orders of magnitude. The technology provides an efficient, zero-copy data transfer between NVIDIA GPUs while leveraging the hardware engines in the SmartNICs and DPUs. Figure 1 shows GPUDirect RDMA technology between two GPU nodes. The GPU on Node 1 directly communicates with the GPU on Node 2 over the network, bypassing the CPU devices.
+
+[NVIDIA Kubernetes Device Plug-in Brings Temporal GPU Concurrency](https://www.infoq.com/news/2022/12/k8s-gpu-time-slicing/?utm_campaign=infoq_content&utm_source=infoq&utm_medium=feed&utm_term=news)
+
+***
+
+### Base
+
+#### ElasticGPU
+[使用 Elastic GPU 管理 Kubernetes GPU 资源 | 5star](https://mp.weixin.qq.com/s/aoilv9VixpT5770nmuB7wg)
+
+> PS：[TKE 下的 qGPU 容器虚拟化技术实践](https://www.bilibili.com/video/BV1Nt4y147Cf/?spm_id_from=333.999.0.0&vd_source=997e9fb044ba93294024b8f47ef67549) : 从较高层次讲解了 qGPU 技术
+
+定义了三种全新的 Kubernetes CRD，用于代表 GPU 资源的不同抽象：
+- ElasticGPU：ElasticGPU 是集群中一个实际可使用的 GPU 资源，可以是一块本地 GPU 物理卡、一个 GPU 切片资源（ GPU 算力 / 显存 的组合）、一个远端 GPU 设备。
+- ElasticGPUClaim：ElasticGPUClaim 是用户对 ElasticGPU 资源的申领，可以申请整卡数量，申请 GPU 核数 / 显存，或者申请 TFLOPS 算力。
+- EGPUClass：EGPUClass 提供了生产和挂载 ElasticGPU 的方式，可以使用 qGPU 虚拟化、vCUDA、或是 GPU 远端池化的技术。
+
+过程：
+- qGPU 资源申请
+``` yaml
+apiVersion: elasticgpu.io/v1alpha
+kind: ElasticGPUClass
+metadata:
+  name: qgpu-class
+provisioner: elasticgpu.io/qgpu
+reclaimPolicy: Retain
+eGPUBindingMode: Immediate
+---
+apiVersion: elasticgpu.io/v1alpha
+kind: ElasticGPUClaim
+metadata:
+  name: qgpu-egpuc
+spec:
+  storageClassName: qgpu-class
+  resources:
+    requests:
+      tke.cloud.tencent.com/qgpu-core: 10
+      tke.cloud.tencent.com/qgpu-memory: 4GB
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qgpu-pod
+  annotations:
+    elasticgpu.io/egpuc-<container-name>: qgpu-egpuc
+spec:
+  containers:
+  - name: test
+```
+- qGPU 资源调度
+依赖原有 device plugin 与 extended resource 机制。
+通过 elastic-gpu-admission-hook 在 Pod 创建时识别 annotations elasticgpu.io/egpuc-<container-name>，将申请资源正确设置到 containers 中。
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qgpu-pod
+  annotations:
+    elasticgpu.io/egpuc-test: qgpu-egpuc
+spec:
+  containers:
+  - name: test
+    resources:
+      requests:
+        tke.cloud.tencent.com/qgpu-core: 10
+        tke.cloud.tencent.com/qgpu-memory: 4GB
+      limits:
+        tke.cloud.tencent.com/qgpu-core: 10
+        tke.cloud.tencent.com/qgpu-memory: 4GB
+```
+![1f692231d346b090ee7248f52076ce0d.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5787)
+- qGPU 资源创建
+qgpu-manager 会 watch ElastciGPU CRD 变化，在绑定节点成功后，会执行创建 qGPU 设备的操作。qgpu-manager 会根据 CRD 中包含的申请算力与显存信息以及调度到的 GPU 卡索引，在底层创建 qGPU 设备。
+![7e33a9804b0ed072450e14b31092925b.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5788)
+- qGPU 设备挂载
+qgpu-manager 是一个 device plugin 插件，kubelet 会在分配 device 时通过标准接口调用插件。在接口 Allocate 和 PreStartContainer 中，我们会挂载必要的 qGPU、nvidia 设备以及设置环境变量。最后，我们依赖 qgpu-container-runtime 进行 qGPU 设备与容器的绑定工作。
+![07023ef38c1204d76f801db74eaa122d.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5789)
+
+***
+
+### 技术方案概览
+
+[云原生GPU算力管理探索 | 5star](https://mp.weixin.qq.com/s/luuc4Vj3je0g0Nmjhmp5Zw)
+#### k8s 原生方案
+
+![9d7d5c1a671639a5084eeeccabf3b45d.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5790)
+
+Extended resources + Device plugin (with device driver)
+- 优点：简单原生
+- 缺点：缺乏全局视角、整数分配、不支持共享
+
+#### 业内 GPU 共享方案
+
+Extended resources + Device plugin + extender scheduler + 资源隔离技术
+这类方案中，比较重要的是 资源隔离技术，主要有三类：
+- 截获CUDA库转发，如vCUDA。
+- 截获驱动转发，如阿里云cGPU、腾讯云qGPU。
+- 截获GPU硬件访问，如NVIDIA GRID vGPU。
+
+优缺点：
+- 优点：支持共享 GPU
+- 缺点：自研难度大，往往依赖自研内核隔离
+
+##### cGPU
+
+cGPU是阿里云基于`内核虚拟GPU隔离`的容器共享技术。即多个容器共享一张GPU卡，从而实现业务的安全隔离，提高 GPU 硬件资源的利用率并降低使用成本。和之前其开源的 GPU Sharing 工具不同，这次 cGPU 实现了对资源的隔离。通过一个内核驱动，为容器提供了虚拟的 GPU 设备，从而实现了显存和算力的隔离；通过用户态轻量的运行库，来对容器内的虚拟 GPU 设备进行配置。
+
+![158ee531e9a73727ee09f88dec8a594c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5791)
+
+##### qGPU
+
+腾讯云推出的 GPU 容器共享技术，支持在多个容器间共享 GPU 卡并提供容器间显存、算力强隔离的能力，其原理与阿里云cGPU相似，此处不多介绍。
+
+![061f8afac898b0293b522bba87857659.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5792)
+
+##### vCUDA
+
+这里主要是讨论腾讯开源的 GaiaGPU。vCUDA 的系统架构采用一个 Manager 来管理 GPU，Manager 负责配置容器的 GPU 计算能力和显存资源，做到使用者无法使用多余申请的显存，GPU 的平均使用率不会大幅超出申请值。vCUDA 的设计只侵入了 CUDA 层，用户的程序无需重新编译就可以运行在基于 vCUDA 的 GPU 实现共享。vCUDA 使用修改后 cuda library 来达到资源控制，vCUDA 分别修改了计算操作，显存操作和信息获取3个方面的 API。
+
+![cfae6a17f2c1b4ce3b9052538be709c2.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5793)
+![b1317547311bba38b899152e94c3fba9.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5794)
+
+#### Elastic GPU
+
+参考 PV、PVC、StorageClass 的思路，期望通过定义一组类似的 CRD，做到屏蔽后端 GPU 技术实现细节的目的
+
+ElasticGPU：ElasticGPU 是集群中一个实际可使用的 GPU 资源，可以是一块本地 GPU 物理卡、一个 GPU 切片资源（ GPU 算力 / 显存 的组合）、一个远端 GPU 设备。
+ElasticGPUClaim：ElasticGPUClaim 是用户对 ElasticGPU 资源的申领，可以申请整卡数量，申请 GPU 核数 / 显存，或者申请 TFLOPS 算力。
+EGPUClass：EGPUClass 提供了生产和挂载 ElasticGPU 的方式，可以使用 qGPU 虚拟化、vCUDA、或是 GPU 远端池化的技术。
+![db9075a8b809623cb14234afcd6c48d0.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5795)
+
+***
+
+### GPU 池化
+
+GPU 池化区别于传统的单机共享物理机 GPU 的“虚拟化”技术，GPU 池化可以共享整个集群内的 GPU 资源，能做到`按需调用、用完释放`
+常见的NVIDIA GPU虚拟化技术方案有：NVIDIA GRID(vGPU)，NVIDIA MPS，阿里的cGPU和腾讯开源的vCUDA。其中，在k8s容器上常用的为vCUDA和cGPU方案
+
+#### OrionX
+
+[对比，还原真实的GPU池化 | 4star](https://new.qq.com/rain/a/20220413A05US000)
+- 文章将使用 GPU 资源分为四个阶段：
+    - 简单虚拟化：将物理GPU按固定比例切分成多个虚拟GPU，比如1/2或1/4,每个虚拟GPU的显存相等，算力轮询
+    - 任意虚拟化：仍然是以单机GPU虚拟化为目标，但是通过一些技术手段支持物理GPU的从算力和显存两个维度灵活切分，实现自定义大小，满足AI应用差异化需求
+    - 远程调用：重要技术突破在于支持GPU的跨节点调用，AI应用可以部署到数据中心的任意位置，不管所在的节点上有没有GPU。在该阶段，资源纳管的范围从单个节点扩展到由网络互联起来的整个数据中心，是从GPU虚拟化向GPU资源池化进化的里程碑
+    - 资源池化：关键点在于按需调用，动态伸缩，用完释放。借助池化能力，AI应用可以根据负载需求调用任意大小的GPU，甚至可以聚合多个物理节点的GPU；在容器或虚机创建之后，仍然可以调整虚拟GPU的数量和大小；在AI应用停止的时候，立刻释放GPU资源回到整个GPU资源池，以便于资源高效流转，充分利用
+![79d5f61ec0526b427363d9b076ab716f.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5956)
+
+- 基于整个数据中心范围的GPU资源池化，不仅可以支持本地GPU虚拟化，而且还能打破单机资源调度的物理边界，让用户透明使用任意物理机上、任意数量的GPU资源，按需灵活调用，用完立即释放，极大地提升了昂贵GPU的利用率和业务的灵活度
+    - 趋动科技OrionX AI算力资源池化解决方案已经实现了GPU资源池化，即阶段四。它在软件架构上采用数据面+控制面结合的方式——数据面包括OrionX Client Runtime（即AI应用或用户进程）与OrionX Server Service（即接管GPU之后将GPU虚拟化抽象）两个组件，两者之间交换计算信令，一个Client可以与本机的Server通信，也可以与远端的Server通信，甚至可以同时与多个Server通信，通信的过程其实就是调用GPU计算的过程。如此一来，从OrionX Client的视角看到的就是一个大资源池，任一Client都可以实现前面所说的按需灵活调用的效果
+![c98c01568a21816af65d55feda79a2ec.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5957)
+
+[浅析 Kubernetes 对 GPU 虚拟化、池化技术的集成 | 4star](https://www.bilibili.com/video/BV1SW4y167K5/?spm_id_from=333.337.search-card.all.click&vd_source=997e9fb044ba93294024b8f47ef67549)
+- vmware bifusion 也是一个类似的竞品
+- 拦截 cuda 请求
+
+#### Bitffusion
+
+[Bitfusion：细粒度切片的GPU池化CUDA计算方案](https://mp.weixin.qq.com/s/SMczSWxuUPvnDyGHMy2wGA)
+[Bitfusion 性能评估：10GbE vs. 100G RDMA跨网络GPU调用](https://mp.weixin.qq.com/s?__biz=MzAwODExNjI3NA==&mid=2649780146&idx=1&sn=a4bf6de065e10b29a55bcf3ec9fd0509&chksm=83770eefb40087f9157373c2239ee27e62bf6ccfd44c090c237c6703bee59e9964c7be958871&scene=178&cur_album_id=2557927687189921792#rd)
+
+Bitfusion 把 GPU 资源集中起来，组成 GPU 资源池，然后共享给大家使用，这个方案分为两部分
+
+- Bitfusion 服务器：把 GPU 安装在 vSphere 服务器上 (要求 vSphere 7 以上版本)，然后在上面运行 Bitfusion Server (以 OVA 格式提供的 virtual appliance)，Bitfusion Server 可以把物理 GPU 资源虚拟化，共享给多个用户使用
+- Bitfusion 客户机：Bitfusion Client 是运行在其他 vSphere 服务器上的 Linux 虚机 (要求 vSphere 6.7 以上版本)， 机器学习 ML (Machine Learning) 工作负载运行在这些虚拟机上，Bitfusion 会把它们对于GPU 的服务请求通过网络传输给 Bitfusion Server，计算完成后再返回结果。对于 ML 工作负载来说，远程 GPU 是完全透明的，它就像是在使用本地的 GPU 硬件
+
+##### Bitfusion 原理
+
+Bitfusion 在 CUDA driver 这个层面上截获了所有的 CUDA 服务访问，然后把这些服务请求和数据通过网络传递给 Bitfusion Server，在服务器这一端再把这些服务请求交给真正的 CUDA driver 来处理，这就是 Bitfusion 的基本工作原理，如下图所示。我们可以看到 Bitfusion Client 的软件堆栈中插入了一个 CUDA driver 的代理，通过这个代理来把服务请求转发给 Bitfusion Server 上的 CUDA 下层服务堆栈。GPU 辅助的神经网络学习完成之后，结果再逆向通过这个堆栈返回机器学习应用 ML App
+
+![c489e857c1b39fa0e67a9afca7d5448c.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5958)
+
+Bitfusion 的工作原理决定了它有一些额外的资源消耗，主要是客户端和服务器之间的网络传输开销
+
+##### Bitfusion 特点
+
+- 分区可以任意大小：Bitfusion 可以指定任意大小的分区，例如 1%；如前所述，这特别适用于开发测试等试验性的应用场景
+- GPU 独立性/隔离性：各个 GPU 分区相互独立，各自运行不同的 AI 框架和模型，绝对不会相互影响
+- 大小可动态调整：GPU 分区可以动态调整大小，例如从同一块物理 GPU 分出的两块分区分别为 45% 和 55%，55% 的 GPU 分区可以进一步拆分成更小的两块 35% 和 20%，而不会影响另一块 45% 分区 上工作负载的正常运行
+- 支持多个物理 GPU：从不同物理 GPU 中分出来的多个 GPU 分区能够以多个 GPU 的形式分配给同一个用户和工作负载，这既可以提高整个 GPU 资源池的利用率，也有助于开发和调试多 GPU 工作负载应用
+
+##### Bitfusion 性能测试
+
+![29bdb9c5c120a5c512b3643ba3dd1518.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5965)
+![3c159c531f19df8d70aff70380db0d08.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5966)
+![a45fe215fc2dd83c6c4eceebf720b836.png](evernotecid://2F3861E5-CAD3-4EDE-8A6D-500F9B46D2D0/appyinxiangcom/34874899/ENResource/p5967)
+Bitfusion 由于采用了客户机和服务器模式来共享 GPU，CUDA 调用和相关的数据都需要通过网络来进行传输，相比于在本机上使用 GPU 会有一定的性能损耗。从测试结果我们可以看到 Bitfusion 对于 GPU 的性能损耗最大偏差也不到 20%，相比于 Bitfusion 方案所带来的共享便利和 GPU 利用率的提升是完全可以接受的。
